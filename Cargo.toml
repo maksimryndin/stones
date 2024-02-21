@@ -1,0 +1,17 @@
+[workspace.package]
+authors = ["Maksim Ryndin"]
+edition = "2021"
+repository = "https://github.com/maksimryndin/stones.git"
+license = "MIT/Apache 2.0"
+
+[workspace]
+resolver = "2"
+
+members = [
+    "core", "raft",
+]
+
+[workspace.lints.clippy]
+
+
+[workspace.dependencies]

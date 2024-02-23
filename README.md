@@ -4,7 +4,7 @@ Primitives for building distributed systems in Rust
 
 ## Raft
 
-> In search of an understandable Raft implementation in Rust
+> In search of an understandable Rust implementation of Raft
 
 ## LICENSE
 

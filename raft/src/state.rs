@@ -75,13 +75,10 @@ pub(crate) struct RaftNode<R: Role, S> {
 // }
 
 pub(crate) trait Role {}
-pub(crate) trait NonLeaderRole {}
 
 impl Role for Leader {}
 impl Role for Candidate {}
 impl Role for Follower {}
-impl NonLeaderRole for Candidate {}
-impl NonLeaderRole for Follower {}
 
 /// Possible transition from role R to role N
 struct Transition<R: Role, N: Role, S> {
@@ -168,7 +165,7 @@ impl<S> RaftNode<Candidate, S> {
     }
 
     // start a new election by incrementing its term and initiating another round of Request-Vote RPCs
-    async fn on_election_timeout(self) -> Transition<Candidate, Candidate, S> {
+    async fn on_election_timeout(&mut self) {
         todo!()
     }
 
@@ -187,24 +184,18 @@ impl<S> RaftNode<Follower, S> {
         todo!()
     }
 
-    async fn on_append_request(
-        self,
-        request: AppendEntriesRequest<S>,
-    ) -> Transition<Follower, Follower, S> {
+    async fn on_append_request(&mut self, request: AppendEntriesRequest<S>) {
         // Once a follower learns
         // that a log entry is committed, it applies the entry to its
         // local state machine (in log order)
         todo!()
     }
 
-    async fn on_vote_request(
-        self,
-        request: RequestVoteRequest,
-    ) -> Transition<Follower, Follower, S> {
+    async fn on_vote_request(&mut self, request: RequestVoteRequest) {
         todo!()
     }
 
-    async fn on_election_timeout(self) -> Transition<Follower, Candidate, S> {
+    async fn on_election_timeout(self) -> RaftNode<Candidate, S> {
         // a follower increments its current
         // term and transitions to candidate state
         // votes for
@@ -227,7 +218,7 @@ async fn generate_timeout() -> u64 {
 
 pub async fn main<S>() {
     let mut follower_slot = Some(RaftNode::<Follower, S>::new().await);
-    let mut election_timeout = generate_timeout().fuse();
+    let election_timeout = generate_timeout().fuse();
     futures::pin_mut!(election_timeout);
     let mut candidate_slot: Option<RaftNode<Candidate, S>> = None;
     let mut leader_slot: Option<RaftNode<Leader, S>> = None;
@@ -243,11 +234,8 @@ pub async fn main<S>() {
             req = &mut append_requests.next() => {
                 let req = req.unwrap();
                 match (follower_slot.take(), candidate_slot.take()) {
-                (Some(follower), None) => {
-                    match follower.on_append_request(req).await {
-                        Transition{role: Some(follower), changed_to: None} => {follower_slot = Some(follower);},
-                        _ => unreachable!(),
-                    }
+                (Some(mut follower), None) => {
+                    follower.on_append_request(req).await;
                 },
                 (None, Some(candidate)) => {
                     match candidate.on_append_request(req).await {
@@ -268,11 +256,8 @@ pub async fn main<S>() {
             req = &mut vote_requests.next() => {
                 let req = req.unwrap();
                 match (follower_slot.take(), candidate_slot.take()) {
-                (Some(follower), None) => {
-                    match follower.on_vote_request(req).await {
-                        Transition{role: Some(follower), changed_to: None} => {follower_slot = Some(follower);},
-                        _ => unreachable!(),
-                    }
+                (Some(mut follower), None) => {
+                    follower.on_vote_request(req).await;
                 },
                 (None, Some(candidate)) => {
                     match candidate.on_vote_request(req).await {
@@ -295,24 +280,14 @@ pub async fn main<S>() {
                     _ => unreachable!(),
                 }
             }},
-            timeout = &mut election_timeout => match (follower_slot.take(), candidate_slot.take()) {
+            timeout = &mut election_timeout => match (follower_slot.take(), candidate_slot.as_mut()) {
                 (Some(follower), None) => {
-                    match follower.on_election_timeout().await {
-                        Transition{role: None, changed_to: Some(candidate)} => {
-                            election_timeout.as_mut().set(generate_timeout().fuse());
-                            candidate_slot = Some(candidate);
-                        },
-                        _ => unreachable!(),
-                    }
+                    election_timeout.as_mut().set(generate_timeout().fuse());
+                    candidate_slot = Some(follower.on_election_timeout().await);
                 },
                 (None, Some(candidate)) => {
-                    match candidate.on_election_timeout().await {
-                        Transition{role: Some(candidate), changed_to: None} => {
-                            election_timeout.as_mut().set(generate_timeout().fuse());
-                            candidate_slot = Some(candidate);
-                        },
-                        _ => unreachable!(),
-                    }
+                    election_timeout.as_mut().set(generate_timeout().fuse());
+                    Some(candidate.on_election_timeout().await);
                 },
                 _ => unreachable!(),
             },

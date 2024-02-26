@@ -1,10 +1,12 @@
 #![forbid(unsafe_code)]
 //#![cfg_attr(not(any(test, fuzzing)), deny(missing_docs))]
 
+mod effects;
+mod protocol;
 mod rpc;
 mod state;
 
-pub use state::main;
+pub use protocol::main;
 
 /// Time is divided into terms, and each term begins
 /// with an election.

@@ -26,7 +26,7 @@ impl<T: Sized> DerefMut for Persistent<T> {
 
 // impl also AsRef an AsMut for Persistent
 
-pub(crate) struct RaftNode<R: Role, S> {
+pub(crate) struct CommonAttributes<S> {
     /// latest term server has seen (initialized to 0
     /// on first boot, increases monotonically)
     pub(crate) current_term: Persistent<Term>,
@@ -51,6 +51,10 @@ pub(crate) struct RaftNode<R: Role, S> {
     /// at a given index to its state machine, no other server
     /// will ever apply a different log entry for the same index.
     pub(crate) last_applied: LogId,
+}
+
+pub(crate) struct RaftNode<R: Role, S> {
+    pub(crate) common: CommonAttributes<S>,
     /// Role-specific data
     pub(crate) role: R,
 }
@@ -97,7 +101,22 @@ impl<S> RaftNode<Leader, S> {
         todo!()
     }
 
-    pub(crate) async fn on_append_reponse(&mut self, response: AppendEntriesResponse) {
+    pub(crate) async fn on_append_reponse(
+        self,
+        response: AppendEntriesResponse,
+    ) -> Transition<Leader, Follower, S> {
+        if response.term > *self.common.current_term {
+            return Transition::ChangedTo(self.into());
+        }
+        if !response.success {}
+        // if last log index ≥ nextIndex for a follower: send
+        // AppendEntries RPC with log entries starting at nextIndex
+        // If successful: update nextIndex and matchIndex for
+        // follower (§5.3)
+        // • If AppendEntries fails because of log inconsistency:
+        // decrement nextIndex and retry
+
+        // can become a follower it term > current
         // count responses
         // if request was replicated on the majority of nodes
         // 1) respond to client 2) mark entry as commited so all previous entries are also considered commited 3) apply entry to its state machine
@@ -107,47 +126,84 @@ impl<S> RaftNode<Leader, S> {
         // then all prior entries are committed indirectly because
         // of the Log Matching Property.
 
-        // if request was rejected, the leader decrements nextIndex for nodeId and retries the AppendEntries RPC
-    }
-}
+        //         If there exists an N such that N > commitIndex, a majority
+        // of matchIndex[i] ≥ N, and log[N].term == currentTerm:
+        // set commitIndex = N (§5.3, §5.4).
 
-impl<S> From<RaftNode<Candidate, S>> for RaftNode<Leader, S> {
-    fn from(candidate: RaftNode<Candidate, S>) -> Self {
-        // initializes all next_index values to the index just after the
-        // last one in its log
+        // if request was rejected, the leader decrements nextIndex for nodeId and retries the AppendEntries RPC
+        Transition::Remains(self)
+    }
+
+    pub(crate) async fn send_append_requests(&mut self) {
         todo!()
     }
 }
 
-pub(crate) struct Candidate {}
+pub(crate) struct Candidate {
+    votes: usize,
+}
 
 impl<S> RaftNode<Candidate, S> {
     pub(crate) async fn on_append_request(
-        self,
+        mut self,
         request: AppendEntriesRequest<S>,
     ) -> Transition<Candidate, Follower, S> {
-        // if req.term >= self.current_term -> Follower
-        todo!()
+        let response = self.process_append_request(request);
+        // TODO send response via provided reply_to
+        // TODO save persistent state
+        if response.success {
+            Transition::ChangedTo(self.into())
+        } else {
+            Transition::Remains(self)
+        }
     }
 
     pub(crate) async fn on_vote_request(
-        self,
+        mut self,
         request: RequestVoteRequest,
     ) -> Transition<Candidate, Follower, S> {
-        todo!()
+        let response = self.process_vote_request(request);
+        // TODO send response via provided reply_to
+        // TODO save persistent state
+        if response.vote_granted {
+            Transition::ChangedTo(self.into())
+        } else {
+            Transition::Remains(self)
+        }
     }
 
-    // either receives new votes and remains Candidate or becomes a new Leader (if majority of votes) and sends heartbeats
     pub(crate) async fn on_vote_response(
         self,
-        request: RequestVoteResponse,
-    ) -> Transition<Candidate, Leader, S> {
-        todo!()
+        response: RequestVoteResponse,
+    ) -> Transition<Candidate, Follower, S> {
+        if response.vote_granted {
+            self.role.votes.checked_add(1).expect("too many votes");
+        } else if response.term > *self.common.current_term {
+            return Transition::ChangedTo(self.into());
+        }
+        Transition::Remains(self)
+    }
+
+    // if majority of votes becomes a new Leader and sends heartbeats
+    pub(crate) fn check_votes(self) -> Transition<Candidate, Leader, S> {
+        // TODO majority
+        if self.role.votes > 3 {
+            Transition::ChangedTo(self.into())
+        } else {
+            Transition::Remains(self)
+        }
     }
 
     // start a new election by incrementing its term and initiating another round of Request-Vote RPCs
     pub(crate) async fn on_election_timeout(&mut self) {
-        todo!()
+        if let Err(_) = (*self.common.current_term).increment() {
+            // TODO crash as we cannot insrease term ? or remain a follower?
+            // term is persistent so we cannot recover from crash automatically
+            // neither receive append requests - every time any leader will be disqualified
+        }
+        // vote for self
+        self.role.votes.checked_add(1).expect("too many votes");
+        // broadcast RequestVote
     }
 
     // if candidate (i.e. doesn't know the leader) receives a client request - it responds with 503 Service Unavailable
@@ -166,27 +222,59 @@ impl<S> RaftNode<Follower, S> {
     }
 
     pub(crate) async fn on_append_request(&mut self, request: AppendEntriesRequest<S>) {
-        // Once a follower learns
-        // that a log entry is committed, it applies the entry to its
-        // local state machine (in log order)
-        todo!()
+        let response = self.process_append_request(request);
+        // TODO send response via provided reply_to
+        // TODO save persistent state
     }
 
     pub(crate) async fn on_vote_request(&mut self, request: RequestVoteRequest) {
-        todo!()
+        let response = self.process_vote_request(request);
+        // TODO send response via provided reply_to
+        // TODO save persistent state
     }
 
     pub(crate) async fn on_election_timeout(self) -> RaftNode<Candidate, S> {
-        // a follower increments its current
-        // term and transitions to candidate state
-        // votes for
-        // itself and issues RequestVote RPCs in parallel to each of
-        // the other servers in the cluster
-        todo!()
+        let mut candidate: RaftNode<Candidate, S> = self.into();
+        candidate.on_election_timeout().await;
+        candidate
     }
 
     // redirect to the leader
     pub(crate) async fn on_client_request(&self, request: ()) {
+        todo!()
+    }
+}
+
+/// State transitions
+
+impl<S> From<RaftNode<Candidate, S>> for RaftNode<Follower, S> {
+    fn from(candidate: RaftNode<Candidate, S>) -> Self {
+        // initializes all next_index values to the index just after the
+        // last one in its log
+        todo!()
+    }
+}
+
+impl<S> From<RaftNode<Leader, S>> for RaftNode<Follower, S> {
+    fn from(leader: RaftNode<Leader, S>) -> Self {
+        // initializes all next_index values to the index just after the
+        // last one in its log
+        todo!()
+    }
+}
+
+impl<S> From<RaftNode<Follower, S>> for RaftNode<Candidate, S> {
+    fn from(follower: RaftNode<Follower, S>) -> Self {
+        // initializes all next_index values to the index just after the
+        // last one in its log
+        todo!()
+    }
+}
+
+impl<S> From<RaftNode<Candidate, S>> for RaftNode<Leader, S> {
+    fn from(candidate: RaftNode<Candidate, S>) -> Self {
+        // initializes all next_index values to the index just after the
+        // last one in its log
         todo!()
     }
 }

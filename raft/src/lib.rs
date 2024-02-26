@@ -14,7 +14,16 @@ pub use protocol::main;
 /// Election Safety: at most one leader can be elected in a
 /// given term.
 #[derive(Clone, Copy, PartialEq, PartialOrd, Eq, Ord)]
-struct Term(u64);
+pub(crate) struct Term(u64);
+
+struct TermOverflow;
+
+impl Term {
+    pub(crate) fn increment(&mut self) -> Result<(), TermOverflow> {
+        self.0 = self.0.checked_add(1).ok_or(TermOverflow)?;
+        Ok(())
+    }
+}
 
 struct NodeId;
 

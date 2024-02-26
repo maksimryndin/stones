@@ -9,6 +9,7 @@ enum CurrentRole<S> {
     Follower(RaftNode<Follower, S>),
 }
 
+// Protocol is validated by types and method signatures at state.rs
 pub async fn main<S>() {
     let mut current = CurrentRole::Follower(RaftNode::<Follower, S>::new().await);
     let election_timeout = generate_timeout().fuse();
@@ -55,9 +56,17 @@ pub async fn main<S>() {
                     CurrentRole::Candidate(candidate) => {
                         current = CurrentRole::Candidate(candidate);
                     },
-                    CurrentRole::Leader(mut leader) => {
-                        leader.on_append_reponse(response).await;
-                        current = CurrentRole::Leader(leader);
+                    CurrentRole::Leader(leader) => {
+                        match leader.on_append_reponse(response).await {
+                            Transition::Remains(leader) => {
+                                current = CurrentRole::Leader(leader);
+                            },
+                            Transition::ChangedTo(follower) => {
+                                election_timeout.as_mut().set(generate_timeout().fuse());
+                                current = CurrentRole::Follower(follower);
+                            }
+                        }
+
                     }
                 }
             },
@@ -70,7 +79,9 @@ pub async fn main<S>() {
                     },
                     CurrentRole::Candidate(candidate) => {
                         match candidate.on_vote_request(req).await {
-                            Transition::Remains(candidate) => {current = CurrentRole::Candidate(candidate);},
+                            Transition::Remains(candidate) => {
+                                current = CurrentRole::Candidate(candidate);
+                            },
                             Transition::ChangedTo(follower) => {
                                 election_timeout.as_mut().set(generate_timeout().fuse());
                                 current = CurrentRole::Follower(follower);
@@ -90,8 +101,20 @@ pub async fn main<S>() {
                     },
                     CurrentRole::Candidate(candidate) => {
                         match candidate.on_vote_response(response).await {
-                            Transition::Remains(candidate) => {current = CurrentRole::Candidate(candidate);},
-                            Transition::ChangedTo(leader) => {current = CurrentRole::Leader(leader);},
+                            Transition::Remains(candidate) => {
+                                match candidate.check_votes() {
+                                    Transition::Remains(candidate) => {
+                                        current = CurrentRole::Candidate(candidate);
+                                    },
+                                    Transition::ChangedTo(leader) => {
+                                        current = CurrentRole::Leader(leader);
+                                    },
+                                }
+                            },
+                            Transition::ChangedTo(follower) => {
+                                election_timeout.as_mut().set(generate_timeout().fuse());
+                                current = CurrentRole::Follower(follower);
+                            },
                         }
                     },
                     CurrentRole::Leader(leader) => {
@@ -115,6 +138,7 @@ pub async fn main<S>() {
                         current = CurrentRole::Leader(leader);
                     }
                 },
+            // leader broadcast
             req = &mut client_requests.next() => {
                 let req = req.unwrap();
                 match current {
@@ -132,7 +156,7 @@ pub async fn main<S>() {
                     }
                 }
             },
-            default => todo!("handle  graceful shutdown; nodes reconfiguration"),
+            default => todo!("leader's broadcast; handle  graceful shutdown; nodes reconfiguration"),
         };
     }
 }

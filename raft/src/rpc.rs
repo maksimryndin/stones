@@ -21,10 +21,10 @@ pub(crate) struct AppendEntriesRequest<S> {
 
 pub(crate) struct AppendEntriesResponse {
     /// currentTerm, for leader to update itself
-    term: Term,
+    pub(crate) term: Term,
     /// true if follower contained entry matching
     /// prevLogIndex and prevLogTerm
-    success: bool,
+    pub(crate) success: bool,
 }
 
 trait NodeRequest {
@@ -41,7 +41,7 @@ impl<R: Role, S> RaftNode<R, S> {
     /// Current terms are exchanged
     /// whenever servers communicate
     fn on_node_request(&mut self, req: &dyn NodeRequest) -> bool {
-        let current_term = *self.current_term;
+        let current_term = *self.common.current_term;
         let proposed_term = req.term();
         // If a server receives a request with a stale term
         // number, it rejects the request
@@ -52,20 +52,23 @@ impl<R: Role, S> RaftNode<R, S> {
         // that its term is out of date, it immediately reverts to fol-
         // lower state
         if proposed_term > current_term {
-            *self.current_term = proposed_term;
+            *self.common.current_term = proposed_term;
         }
         true
     }
 }
 
 impl<R: Role, S> RaftNode<R, S> {
-    fn process_append_request(&mut self, req: AppendEntriesRequest<S>) -> AppendEntriesResponse {
-        let current_term = *self.current_term;
+    pub(crate) fn process_append_request(
+        &mut self,
+        req: AppendEntriesRequest<S>,
+    ) -> AppendEntriesResponse {
+        let current_term = *self.common.current_term;
         let prev_log_index = req.prev_log_entry.index;
         let proposed_term = req.term;
         if !self.on_node_request(&req)
-            || prev_log_index >= self.log.len()
-            || &self.log[prev_log_index] != &req.prev_log_entry
+            || prev_log_index >= self.common.log.len()
+            || &self.common.log[prev_log_index] != &req.prev_log_entry
         {
             return AppendEntriesResponse {
                 term: current_term,
@@ -74,18 +77,19 @@ impl<R: Role, S> RaftNode<R, S> {
         }
         let last_index = prev_log_index + req.entries.len();
 
-        let (index_delete_since, index_insert_since) = ((prev_log_index + 1)..self.log.len())
+        let (index_delete_since, index_insert_since) = ((prev_log_index + 1)
+            ..self.common.log.len())
             .zip(0..req.entries.len())
-            .find(|(log_index, new_index)| req.entries[*new_index] != self.log[*log_index])
-            .unwrap_or((self.log.len(), 0));
-        self.log.truncate(index_delete_since);
+            .find(|(log_index, new_index)| req.entries[*new_index] != self.common.log[*log_index])
+            .unwrap_or((self.common.log.len(), 0));
+        self.common.log.truncate(index_delete_since);
 
         for entry in req.entries.into_iter().skip(index_insert_since) {
-            self.log.push(entry);
+            self.common.log.push(entry);
         }
 
-        if req.leader_commit > self.commit_index {
-            self.commit_index = req.leader_commit.min(last_index);
+        if req.leader_commit > self.common.commit_index {
+            self.common.commit_index = req.leader_commit.min(last_index);
         }
 
         AppendEntriesResponse {
@@ -113,24 +117,25 @@ impl NodeRequest for RequestVoteRequest {
 
 pub(crate) struct RequestVoteResponse {
     /// currentTerm, for candidate to update itself
-    term: Term,
+    pub(crate) term: Term,
     /// true means candidate received vote
-    vote_granted: bool,
+    pub(crate) vote_granted: bool,
 }
 
 impl<R: Role, S> RaftNode<R, S> {
-    fn process_vote_request(&mut self, req: RequestVoteRequest) -> RequestVoteResponse {
-        let current_term = *self.current_term;
+    pub(crate) fn process_vote_request(&mut self, req: RequestVoteRequest) -> RequestVoteResponse {
+        let current_term = *self.common.current_term;
         if !self.on_node_request(&req)
-            || self.voted_for.is_some()
-            || !self.log.is_empty() && req.last_log_entry < self.log[self.log.len() - 1]
+            || self.common.voted_for.is_some()
+            || !self.common.log.is_empty()
+                && req.last_log_entry < self.common.log[self.common.log.len() - 1]
         {
             return RequestVoteResponse {
                 term: current_term,
                 vote_granted: false,
             };
         }
-        *self.voted_for = Some(req.candidate_id);
+        *self.common.voted_for = Some(req.candidate_id);
 
         RequestVoteResponse {
             term: current_term,

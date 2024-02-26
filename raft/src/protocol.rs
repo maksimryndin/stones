@@ -1,5 +1,5 @@
 use crate::effects::generate_timeout;
-use crate::state::{Candidate, Entry, Follower, Leader, RaftNode, Transition};
+use crate::state::{Candidate, Follower, Leader, RaftNode, Transition};
 use futures::stream::{self, StreamExt};
 use futures::FutureExt;
 
@@ -32,12 +32,12 @@ pub async fn main<S>() {
                     },
                     CurrentRole::Candidate(candidate) => {
                         match candidate.on_append_request(req).await {
+                            Transition::Remains(candidate) => {
+                                current = CurrentRole::Candidate(candidate);
+                            },
                             Transition::ChangedTo(follower) => {
                                 current = CurrentRole::Follower(follower);
                                 election_timeout.as_mut().set(generate_timeout().fuse());
-                            },
-                            Transition::Remains(candidate) => {
-                                current = CurrentRole::Candidate(candidate);
                             },
                         }
                     },

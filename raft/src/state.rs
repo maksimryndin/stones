@@ -1,6 +1,7 @@
 use core::ops::{Deref, DerefMut};
 use std::collections::HashMap;
 
+use crate::entry::Entry;
 use crate::rpc::{
     AppendEntriesRequest, AppendEntriesResponse, RequestVoteRequest, RequestVoteResponse,
 };
@@ -21,15 +22,6 @@ impl<T: Sized> DerefMut for Persistent<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
-}
-
-/// Log Matching: if two logs contain an entry with the same
-/// index and term, then the logs are identical in all entries
-/// up through the given index.
-pub(crate) struct Entry<S> {
-    pub(crate) index: LogId,
-    pub(crate) term: Term,
-    pub(crate) command: S,
 }
 
 // impl also AsRef an AsMut for Persistent
@@ -62,14 +54,6 @@ pub(crate) struct RaftNode<R: Role, S> {
     /// Role-specific data
     pub(crate) role: R,
 }
-
-// impl<R: Role, S> RaftNode<R, S> {
-//     fn new() -> Self<S> {
-
-//     }
-
-//     fn follower_to_candidate()
-// }
 
 pub(crate) trait Role {}
 

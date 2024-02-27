@@ -29,54 +29,54 @@ impl PartialOrd for EntryMeta {
     }
 }
 
-pub(crate) struct Entry<S> {
+pub(crate) struct Entry<C> {
     pub(crate) meta: EntryMeta,
-    pub(crate) command: S,
+    pub(crate) command: C,
 }
 
 /// Log Matching: if two logs contain an entry with the same
 /// index and term, then the logs are identical in all entries
 /// up through the given index.
-impl<S> PartialEq for Entry<S> {
+impl<C> PartialEq for Entry<C> {
     fn eq(&self, other: &Self) -> bool {
         self.meta.eq(&other.meta)
     }
 }
 
-impl<S> Eq for Entry<S> {}
+impl<C> Eq for Entry<C> {}
 
-impl<S> PartialEq<EntryMeta> for Entry<S> {
+impl<C> PartialEq<EntryMeta> for Entry<C> {
     fn eq(&self, other: &EntryMeta) -> bool {
         self.meta.eq(other)
     }
 }
 
-impl<S> PartialEq<Entry<S>> for EntryMeta {
-    fn eq(&self, other: &Entry<S>) -> bool {
+impl<C> PartialEq<Entry<C>> for EntryMeta {
+    fn eq(&self, other: &Entry<C>) -> bool {
         self.eq(&other.meta)
     }
 }
 
-impl<S> Ord for Entry<S> {
+impl<C> Ord for Entry<C> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.meta.cmp(&other.meta)
     }
 }
 
-impl<S> PartialOrd for Entry<S> {
+impl<C> PartialOrd for Entry<C> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(&other))
     }
 }
 
-impl<S> PartialOrd<EntryMeta> for Entry<S> {
+impl<C> PartialOrd<EntryMeta> for Entry<C> {
     fn partial_cmp(&self, other: &EntryMeta) -> Option<Ordering> {
         self.meta.partial_cmp(other)
     }
 }
 
-impl<S> PartialOrd<Entry<S>> for EntryMeta {
-    fn partial_cmp(&self, other: &Entry<S>) -> Option<Ordering> {
+impl<C> PartialOrd<Entry<C>> for EntryMeta {
+    fn partial_cmp(&self, other: &Entry<C>) -> Option<Ordering> {
         self.partial_cmp(&other.meta)
     }
 }

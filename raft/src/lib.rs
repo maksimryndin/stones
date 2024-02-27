@@ -6,8 +6,10 @@ mod entry;
 mod protocol;
 mod rpc;
 mod state;
+mod client;
 
 pub use protocol::main;
+pub use client::Request;
 
 /// Time is divided into terms, and each term begins
 /// with an election.

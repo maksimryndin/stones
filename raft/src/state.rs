@@ -1,10 +1,12 @@
 use core::ops::{Deref, DerefMut};
 use std::collections::HashMap;
+use stones_core::StateMachine;
 
 use crate::entry::Entry;
 use crate::rpc::{
     AppendEntriesRequest, AppendEntriesResponse, RequestVoteRequest, RequestVoteResponse,
 };
+use crate::client::Request;
 use crate::{LogId, NodeId, Term};
 
 /// Persistent state
@@ -26,7 +28,7 @@ impl<T: Sized> DerefMut for Persistent<T> {
 
 // impl also AsRef an AsMut for Persistent
 
-pub(crate) struct CommonAttributes<S> {
+pub(crate) struct CommonAttributes<C> {
     /// latest term server has seen (initialized to 0
     /// on first boot, increases monotonically)
     pub(crate) current_term: Persistent<Term>,
@@ -36,7 +38,7 @@ pub(crate) struct CommonAttributes<S> {
     /// log entries; each entry contains command
     /// for state machine, and term when entry
     /// was received by leader (first index is 1)
-    pub(crate) log: Persistent<Vec<Entry<S>>>,
+    pub(crate) log: Persistent<Vec<Entry<C>>>,
     /// index of highest log entry known to be
     /// committed (initialized to 0, increases
     /// monotonically).
@@ -51,12 +53,14 @@ pub(crate) struct CommonAttributes<S> {
     /// at a given index to its state machine, no other server
     /// will ever apply a different log entry for the same index.
     pub(crate) last_applied: LogId,
+    // state machine
+    pub(crate) machine: StateMachine<C>,
     // nodes
     pub(crate) nodes: HashMap<NodeId, LogId>,
 }
 
-pub(crate) struct RaftNode<R: Role, S> {
-    pub(crate) common: CommonAttributes<S>,
+pub(crate) struct RaftNode<R: Role, C> {
+    pub(crate) common: CommonAttributes<C>,
     /// Role-specific data
     pub(crate) role: R,
 }
@@ -68,9 +72,9 @@ impl Role for Candidate {}
 impl Role for Follower {}
 
 /// Possible transition from role R to role N
-pub(crate) enum Transition<R: Role, N: Role, S> {
-    Remains(RaftNode<R, S>),
-    ChangedTo(RaftNode<N, S>),
+pub(crate) enum Transition<R: Role, N: Role, C> {
+    Remains(RaftNode<R, C>),
+    ChangedTo(RaftNode<N, C>),
 }
 
 pub(crate) struct Leader {
@@ -84,11 +88,11 @@ pub(crate) struct Leader {
     match_index: HashMap<NodeId, LogId>,
 }
 
-impl<S> RaftNode<Leader, S> {
+impl<C> RaftNode<Leader, C> {
     // client request contains a command to
     // be executed by the replicated state machines
     // todo request contains command
-    pub(crate) async fn on_client_request(&mut self, request: ()) {
+    pub(crate) async fn on_client_request(&mut self, request: Request<C>) {
         // appends the command to its log as a new entry
         // issues AppendEntries RPCs in parallel to each of the other
         // servers to replicate the entry
@@ -106,7 +110,7 @@ impl<S> RaftNode<Leader, S> {
     pub(crate) async fn on_append_reponse(
         self,
         response: AppendEntriesResponse,
-    ) -> Transition<Leader, Follower, S> {
+    ) -> Transition<Leader, Follower, C> {
         if response.term > *self.common.current_term {
             return Transition::ChangedTo(self.into());
         }
@@ -118,7 +122,6 @@ impl<S> RaftNode<Leader, S> {
         // • If AppendEntries fails because of log inconsistency:
         // decrement nextIndex and retry
 
-        // can become a follower it term > current
         // count responses
         // if request was replicated on the majority of nodes
         // 1) respond to client 2) mark entry as commited so all previous entries are also considered commited 3) apply entry to its state machine
@@ -145,11 +148,11 @@ pub(crate) struct Candidate {
     votes: u8,
 }
 
-impl<S> RaftNode<Candidate, S> {
+impl<C> RaftNode<Candidate, C> {
     pub(crate) async fn on_append_request(
         mut self,
-        request: AppendEntriesRequest<S>,
-    ) -> Transition<Candidate, Follower, S> {
+        request: AppendEntriesRequest<C>,
+    ) -> Transition<Candidate, Follower, C> {
         let response = self.process_append_request(request);
         // TODO send response via provided reply_to
         // TODO save persistent state
@@ -163,7 +166,7 @@ impl<S> RaftNode<Candidate, S> {
     pub(crate) async fn on_vote_request(
         mut self,
         request: RequestVoteRequest,
-    ) -> Transition<Candidate, Follower, S> {
+    ) -> Transition<Candidate, Follower, C> {
         let response = self.process_vote_request(request);
         // TODO send response via provided reply_to
         // TODO save persistent state
@@ -177,7 +180,7 @@ impl<S> RaftNode<Candidate, S> {
     pub(crate) async fn on_vote_response(
         self,
         response: RequestVoteResponse,
-    ) -> Transition<Candidate, Follower, S> {
+    ) -> Transition<Candidate, Follower, C> {
         if response.vote_granted {
             self.role.votes.checked_add(1).expect("too many votes");
         } else if response.term > *self.common.current_term {
@@ -187,14 +190,14 @@ impl<S> RaftNode<Candidate, S> {
     }
 
     // if majority of votes becomes a new Leader and sends heartbeats
-    pub(crate) fn check_votes(self) -> Transition<Candidate, Leader, S> {
+    pub(crate) fn check_votes(self) -> Transition<Candidate, Leader, C> {
         let number_of_nodes: u8 = self
             .common
             .nodes
             .len()
             .try_into()
             .expect("the maximum number of nodes is 255");
-        if self.role.votes > number_of_nodes.div_ceil(2) {
+        if self.role.votes > number_of_nodes / 2 {
             Transition::ChangedTo(self.into())
         } else {
             Transition::Remains(self)
@@ -215,7 +218,7 @@ impl<S> RaftNode<Candidate, S> {
     }
 
     // if candidate (i.e. doesn't know the leader) receives a client request - it responds with 503 Service Unavailable
-    pub(crate) async fn on_client_request(&self, request: ()) {
+    pub(crate) async fn on_client_request(&self, request: Request<C>) {
         todo!()
     }
 }
@@ -226,12 +229,12 @@ pub(crate) struct Follower {
     leader_id: Option<NodeId>,
 }
 
-impl<S> RaftNode<Follower, S> {
-    pub(crate) async fn new() -> RaftNode<Follower, S> {
+impl<C> RaftNode<Follower, C> {
+    pub(crate) async fn new() -> RaftNode<Follower, C> {
         todo!()
     }
 
-    pub(crate) async fn on_append_request(&mut self, request: AppendEntriesRequest<S>) {
+    pub(crate) async fn on_append_request(&mut self, request: AppendEntriesRequest<C>) {
         self.role.leader_id = Some(request.leader_id.clone());
         let response = self.process_append_request(request);
         // TODO send response via provided reply_to
@@ -244,53 +247,53 @@ impl<S> RaftNode<Follower, S> {
         // TODO save persistent state
     }
 
-    pub(crate) async fn on_election_timeout(self) -> RaftNode<Candidate, S> {
-        let mut candidate: RaftNode<Candidate, S> = self.into();
+    pub(crate) async fn on_election_timeout(self) -> RaftNode<Candidate, C> {
+        let mut candidate: RaftNode<Candidate, C> = self.into();
         candidate.on_election_timeout().await;
         candidate
     }
 
     // redirect to the leader
-    pub(crate) async fn on_client_request(&self, request: ()) {
+    pub(crate) async fn on_client_request(&self, request: Request<C>, reply_to: ) {
         todo!()
     }
 }
 
 /// State transitions
 
-impl<S> From<RaftNode<Candidate, S>> for RaftNode<Follower, S> {
-    fn from(candidate: RaftNode<Candidate, S>) -> Self {
-        let RaftNode::<Candidate, S> { common, .. } = candidate;
-        RaftNode::<Follower, S> {
+impl<C> From<RaftNode<Candidate, C>> for RaftNode<Follower, C> {
+    fn from(candidate: RaftNode<Candidate, C>) -> Self {
+        let RaftNode::<Candidate, C> { common, .. } = candidate;
+        RaftNode::<Follower, C> {
             common,
             role: Follower { leader_id: None },
         }
     }
 }
 
-impl<S> From<RaftNode<Leader, S>> for RaftNode<Follower, S> {
-    fn from(leader: RaftNode<Leader, S>) -> Self {
-        let RaftNode::<Leader, S> { common, .. } = leader;
-        RaftNode::<Follower, S> {
+impl<C> From<RaftNode<Leader, C>> for RaftNode<Follower, C> {
+    fn from(leader: RaftNode<Leader, C>) -> Self {
+        let RaftNode::<Leader, C> { common, .. } = leader;
+        RaftNode::<Follower, C> {
             common,
             role: Follower { leader_id: None },
         }
     }
 }
 
-impl<S> From<RaftNode<Follower, S>> for RaftNode<Candidate, S> {
-    fn from(follower: RaftNode<Follower, S>) -> Self {
-        let RaftNode::<Follower, S> { common, .. } = follower;
-        RaftNode::<Candidate, S> {
+impl<C> From<RaftNode<Follower, C>> for RaftNode<Candidate, C> {
+    fn from(follower: RaftNode<Follower, C>) -> Self {
+        let RaftNode::<Follower, C> { common, .. } = follower;
+        RaftNode::<Candidate, C> {
             common,
             role: Candidate { votes: 0 },
         }
     }
 }
 
-impl<S> From<RaftNode<Candidate, S>> for RaftNode<Leader, S> {
-    fn from(candidate: RaftNode<Candidate, S>) -> Self {
-        let RaftNode::<Candidate, S> { common, .. } = candidate;
+impl<C> From<RaftNode<Candidate, C>> for RaftNode<Leader, C> {
+    fn from(candidate: RaftNode<Candidate, C>) -> Self {
+        let RaftNode::<Candidate, C> { common, .. } = candidate;
         let log_length = common.log.len();
         let next_index = common
             .nodes
@@ -304,7 +307,7 @@ impl<S> From<RaftNode<Candidate, S>> for RaftNode<Leader, S> {
             .cloned()
             .map(|node_id| (node_id, 0))
             .collect();
-        RaftNode::<Leader, S> {
+        RaftNode::<Leader, C> {
             common,
             role: Leader {
                 next_index,

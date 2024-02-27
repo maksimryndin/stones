@@ -6,6 +6,9 @@ Primitives for building distributed systems in Rust
 
 > In search of an understandable Rust implementation of Raft
 
+Guided by principles from https://github.com/w3f/hs-p4p?tab=readme-ov-file#principles
+
+
 ## LICENSE
 
 Licensed under either of

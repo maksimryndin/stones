@@ -3,15 +3,15 @@ use crate::state::{Candidate, Follower, Leader, RaftNode, Transition};
 use futures::stream::{self, StreamExt};
 use futures::FutureExt;
 
-enum CurrentRole<S> {
-    Leader(RaftNode<Leader, S>),
-    Candidate(RaftNode<Candidate, S>),
-    Follower(RaftNode<Follower, S>),
+enum CurrentRole<C> {
+    Leader(RaftNode<Leader, C>),
+    Candidate(RaftNode<Candidate, C>),
+    Follower(RaftNode<Follower, C>),
 }
 
 // Protocol is validated by types and method signatures at state.rs
-pub async fn main<S>() {
-    let mut current = CurrentRole::Follower(RaftNode::<Follower, S>::new().await);
+pub async fn main<C>() {
+    let mut current = CurrentRole::Follower(RaftNode::<Follower, C>::new().await);
     let election_timeout = generate_timeout().fuse();
     futures::pin_mut!(election_timeout);
     let mut append_requests = stream::iter(vec![]).fuse();
@@ -25,14 +25,15 @@ pub async fn main<S>() {
         // biased for deterministic execution
         futures::select_biased! {
             req = &mut append_requests.next() => {
-                let req = req.unwrap();
+                let (conninfo, req) = req.unwrap();
+                let (reply_to, receiver) = oneshot::channel();
                 match current {
                     CurrentRole::Follower(mut follower) => {
-                        follower.on_append_request(req).await;
+                        follower.on_append_request(req, reply_to).await;
                         current = CurrentRole::Follower(follower);
                     },
                     CurrentRole::Candidate(candidate) => {
-                        match candidate.on_append_request(req).await {
+                        match candidate.on_append_request(req, reply_to).await {
                             Transition::Remains(candidate) => {
                                 current = CurrentRole::Candidate(candidate);
                             },
@@ -44,8 +45,11 @@ pub async fn main<S>() {
                     },
                     CurrentRole::Leader(leader) => {
                         current = CurrentRole::Leader(leader);
+                        continue;
                     }
                 }
+                let response = receiver.await;
+                //transport.unicast(conninfo, response)
             },
             response = &mut append_requests_responses.next() => {
                 let response = response.unwrap();
@@ -71,14 +75,15 @@ pub async fn main<S>() {
                 }
             },
             req = &mut vote_requests.next() => {
-                let req = req.unwrap();
+                let (conninfo, req) = req.unwrap();
+                let (reply_to, receiver) = oneshot::channel();
                 match current {
                     CurrentRole::Follower(mut follower) => {
-                        follower.on_vote_request(req).await;
+                        follower.on_vote_request(req, reply_to).await;
                         current = CurrentRole::Follower(follower);
                     },
                     CurrentRole::Candidate(candidate) => {
-                        match candidate.on_vote_request(req).await {
+                        match candidate.on_vote_request(req, reply_to).await {
                             Transition::Remains(candidate) => {
                                 current = CurrentRole::Candidate(candidate);
                             },
@@ -90,8 +95,11 @@ pub async fn main<S>() {
                     },
                     CurrentRole::Leader(leader) => {
                         current = CurrentRole::Leader(leader);
+                        continue;
                     }
                 }
+                let response = receiver.await;
+                //transport.unicast(conninfo, response)
             },
             response = &mut vote_request_responses.next() => {
                 let response = response.unwrap();
@@ -140,21 +148,23 @@ pub async fn main<S>() {
                 },
             // leader broadcast
             req = &mut client_requests.next() => {
-                let req = req.unwrap();
+                let (conninfo, req) = req.unwrap();
+                let (reply_to, receiver) = oneshot::channel();
                 match current {
                     CurrentRole::Follower(follower) => {
-                        follower.on_client_request(req).await;
+                        follower.on_client_request(req, reply_to).await;
                         current = CurrentRole::Follower(follower);
                     },
                     CurrentRole::Candidate(candidate) => {
-                        candidate.on_client_request(req).await;
+                        candidate.on_client_request(req, reply_to).await;
                         current = CurrentRole::Candidate(candidate);
                     },
                     CurrentRole::Leader(mut leader) => {
-                        leader.on_client_request(req).await;
+                        leader.on_client_request(req, reply_to).await;
                         current = CurrentRole::Leader(leader);
                     }
                 }
+                let response = receiver.await;
             },
             default => todo!("leader's broadcast; handle  graceful shutdown; nodes reconfiguration"),
         };

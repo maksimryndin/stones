@@ -18,8 +18,12 @@
 //     async fn shutdown (graceful shutdown)
 // }
 
-// trait Transport {
-//     async fn unicast
+trait<C: ConnectInfo, B> Transport {
+    async fn unicast(&mut self, conn: C, payload: B);
 
-//     async fn broadcast
-// }
+    async fn broadcast(&mut self, &[(conn: C, payload: B)]);
+
+    async fn router(&mut self)
+}
+
+pub trait ConnectInfo {}

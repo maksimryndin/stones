@@ -4,7 +4,7 @@ use crate::{LogId, NodeId, Term};
 
 /// Invoked by leader to replicate log entries (§5.3); also used as
 /// heartbeat (§5.2).
-pub(crate) struct AppendEntriesRequest<S> {
+pub(crate) struct AppendEntriesRequest<C> {
     /// leader’s term
     pub(crate) term: Term,
     /// so follower can redirect clients
@@ -14,7 +14,7 @@ pub(crate) struct AppendEntriesRequest<S> {
     pub(crate) prev_log_entry: EntryMeta,
     /// log entries to store (empty for heartbeat;
     /// may send more than one for efficiency)
-    pub(crate) entries: Vec<Entry<S>>,
+    pub(crate) entries: Vec<Entry<C>>,
     /// leader’s commitIndex
     pub(crate) leader_commit: LogId,
 }
@@ -31,13 +31,13 @@ trait NodeRequest {
     fn term(&self) -> Term;
 }
 
-impl<S> NodeRequest for AppendEntriesRequest<S> {
+impl<C> NodeRequest for AppendEntriesRequest<C> {
     fn term(&self) -> Term {
         self.term
     }
 }
 
-impl<R: Role, S> RaftNode<R, S> {
+impl<R: Role, C> RaftNode<R, C> {
     /// Current terms are exchanged
     /// whenever servers communicate
     fn on_node_request(&mut self, req: &dyn NodeRequest) -> bool {
@@ -58,10 +58,10 @@ impl<R: Role, S> RaftNode<R, S> {
     }
 }
 
-impl<R: Role, S> RaftNode<R, S> {
+impl<R: Role, C> RaftNode<R, C> {
     pub(crate) fn process_append_request(
         &mut self,
-        req: AppendEntriesRequest<S>,
+        req: AppendEntriesRequest<C>,
     ) -> AppendEntriesResponse {
         let current_term = *self.common.current_term;
         let prev_log_index = req.prev_log_entry.index;
@@ -121,7 +121,7 @@ pub(crate) struct RequestVoteResponse {
     pub(crate) vote_granted: bool,
 }
 
-impl<R: Role, S> RaftNode<R, S> {
+impl<R: Role, C> RaftNode<R, C> {
     pub(crate) fn process_vote_request(&mut self, req: RequestVoteRequest) -> RequestVoteResponse {
         let current_term = *self.common.current_term;
         if !self.on_node_request(&req)

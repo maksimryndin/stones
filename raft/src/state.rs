@@ -51,6 +51,8 @@ pub(crate) struct CommonAttributes<S> {
     /// at a given index to its state machine, no other server
     /// will ever apply a different log entry for the same index.
     pub(crate) last_applied: LogId,
+    // nodes
+    pub(crate) nodes: HashMap<NodeId, LogId>,
 }
 
 pub(crate) struct RaftNode<R: Role, S> {
@@ -140,7 +142,7 @@ impl<S> RaftNode<Leader, S> {
 }
 
 pub(crate) struct Candidate {
-    votes: usize,
+    votes: u8,
 }
 
 impl<S> RaftNode<Candidate, S> {
@@ -186,8 +188,13 @@ impl<S> RaftNode<Candidate, S> {
 
     // if majority of votes becomes a new Leader and sends heartbeats
     pub(crate) fn check_votes(self) -> Transition<Candidate, Leader, S> {
-        // TODO majority
-        if self.role.votes > 3 {
+        let number_of_nodes: u8 = self
+            .common
+            .nodes
+            .len()
+            .try_into()
+            .expect("the maximum number of nodes is 255");
+        if self.role.votes > number_of_nodes.div_ceil(2) {
             Transition::ChangedTo(self.into())
         } else {
             Transition::Remains(self)
@@ -204,6 +211,7 @@ impl<S> RaftNode<Candidate, S> {
         // vote for self
         self.role.votes.checked_add(1).expect("too many votes");
         // broadcast RequestVote
+        // TODO save persistent state
     }
 
     // if candidate (i.e. doesn't know the leader) receives a client request - it responds with 503 Service Unavailable
@@ -214,7 +222,9 @@ impl<S> RaftNode<Candidate, S> {
 
 /// A server remains in follower state as long as
 // it receives valid RPCs from a leader or candidate.
-pub(crate) struct Follower {}
+pub(crate) struct Follower {
+    leader_id: Option<NodeId>,
+}
 
 impl<S> RaftNode<Follower, S> {
     pub(crate) async fn new() -> RaftNode<Follower, S> {
@@ -222,6 +232,7 @@ impl<S> RaftNode<Follower, S> {
     }
 
     pub(crate) async fn on_append_request(&mut self, request: AppendEntriesRequest<S>) {
+        self.role.leader_id = Some(request.leader_id.clone());
         let response = self.process_append_request(request);
         // TODO send response via provided reply_to
         // TODO save persistent state
@@ -249,32 +260,56 @@ impl<S> RaftNode<Follower, S> {
 
 impl<S> From<RaftNode<Candidate, S>> for RaftNode<Follower, S> {
     fn from(candidate: RaftNode<Candidate, S>) -> Self {
-        // initializes all next_index values to the index just after the
-        // last one in its log
-        todo!()
+        let RaftNode::<Candidate, S> { common, .. } = candidate;
+        RaftNode::<Follower, S> {
+            common,
+            role: Follower { leader_id: None },
+        }
     }
 }
 
 impl<S> From<RaftNode<Leader, S>> for RaftNode<Follower, S> {
     fn from(leader: RaftNode<Leader, S>) -> Self {
-        // initializes all next_index values to the index just after the
-        // last one in its log
-        todo!()
+        let RaftNode::<Leader, S> { common, .. } = leader;
+        RaftNode::<Follower, S> {
+            common,
+            role: Follower { leader_id: None },
+        }
     }
 }
 
 impl<S> From<RaftNode<Follower, S>> for RaftNode<Candidate, S> {
     fn from(follower: RaftNode<Follower, S>) -> Self {
-        // initializes all next_index values to the index just after the
-        // last one in its log
-        todo!()
+        let RaftNode::<Follower, S> { common, .. } = follower;
+        RaftNode::<Candidate, S> {
+            common,
+            role: Candidate { votes: 0 },
+        }
     }
 }
 
 impl<S> From<RaftNode<Candidate, S>> for RaftNode<Leader, S> {
     fn from(candidate: RaftNode<Candidate, S>) -> Self {
-        // initializes all next_index values to the index just after the
-        // last one in its log
-        todo!()
+        let RaftNode::<Candidate, S> { common, .. } = candidate;
+        let log_length = common.log.len();
+        let next_index = common
+            .nodes
+            .keys()
+            .cloned()
+            .map(|node_id| (node_id, log_length))
+            .collect();
+        let match_index = common
+            .nodes
+            .keys()
+            .cloned()
+            .map(|node_id| (node_id, 0))
+            .collect();
+        RaftNode::<Leader, S> {
+            common,
+            role: Leader {
+                next_index,
+                match_index,
+            },
+        }
     }
 }

@@ -6,17 +6,17 @@ use crate::{LogId, NodeId, Term};
 /// heartbeat (§5.2).
 pub(crate) struct AppendEntriesRequest<S> {
     /// leader’s term
-    term: Term,
+    pub(crate) term: Term,
     /// so follower can redirect clients
-    leader_id: NodeId,
+    pub(crate) leader_id: NodeId,
     /// a log entry immediately preceding
     /// new ones
-    prev_log_entry: EntryMeta,
+    pub(crate) prev_log_entry: EntryMeta,
     /// log entries to store (empty for heartbeat;
     /// may send more than one for efficiency)
-    entries: Vec<Entry<S>>,
+    pub(crate) entries: Vec<Entry<S>>,
     /// leader’s commitIndex
-    leader_commit: LogId,
+    pub(crate) leader_commit: LogId,
 }
 
 pub(crate) struct AppendEntriesResponse {
@@ -65,7 +65,6 @@ impl<R: Role, S> RaftNode<R, S> {
     ) -> AppendEntriesResponse {
         let current_term = *self.common.current_term;
         let prev_log_index = req.prev_log_entry.index;
-        let proposed_term = req.term;
         if !self.on_node_request(&req)
             || prev_log_index >= self.common.log.len()
             || &self.common.log[prev_log_index] != &req.prev_log_entry
@@ -139,7 +138,7 @@ impl<R: Role, S> RaftNode<R, S> {
 
         RequestVoteResponse {
             term: current_term,
-            vote_granted: false,
+            vote_granted: true,
         }
     }
 }

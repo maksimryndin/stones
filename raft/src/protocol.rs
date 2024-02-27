@@ -37,8 +37,8 @@ pub async fn main<S>() {
                                 current = CurrentRole::Candidate(candidate);
                             },
                             Transition::ChangedTo(follower) => {
-                                current = CurrentRole::Follower(follower);
                                 election_timeout.as_mut().set(generate_timeout().fuse());
+                                current = CurrentRole::Follower(follower);
                             },
                         }
                     },

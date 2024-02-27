@@ -25,6 +25,7 @@ impl Term {
     }
 }
 
-struct NodeId;
+#[derive(Clone, Hash, PartialEq, Eq)]
+struct NodeId(String);
 
 type LogId = usize;

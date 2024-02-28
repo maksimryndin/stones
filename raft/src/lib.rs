@@ -1,15 +1,15 @@
 #![forbid(unsafe_code)]
 //#![cfg_attr(not(any(test, fuzzing)), deny(missing_docs))]
 
+mod client;
 mod effects;
 mod entry;
 mod protocol;
 mod rpc;
 mod state;
-mod client;
 
+pub use client::{ClientRequest, ClientResponse};
 pub use protocol::main;
-pub use client::Request;
 
 /// Time is divided into terms, and each term begins
 /// with an election.
@@ -26,8 +26,5 @@ impl Term {
         Ok(())
     }
 }
-
-#[derive(Clone, Hash, PartialEq, Eq)]
-struct NodeId(String);
 
 type LogId = usize;

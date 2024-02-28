@@ -1,6 +1,7 @@
 use crate::entry::{Entry, EntryMeta};
 use crate::state::{RaftNode, Role};
-use crate::{LogId, NodeId, Term};
+use crate::{LogId, Term};
+use stones_core::{NodeId, StateMachine};
 
 /// Invoked by leader to replicate log entries (§5.3); also used as
 /// heartbeat (§5.2).
@@ -37,7 +38,7 @@ impl<C> NodeRequest for AppendEntriesRequest<C> {
     }
 }
 
-impl<R: Role, C> RaftNode<R, C> {
+impl<R: Role, C, S: StateMachine<C>> RaftNode<R, C, S> {
     /// Current terms are exchanged
     /// whenever servers communicate
     fn on_node_request(&mut self, req: &dyn NodeRequest) -> bool {
@@ -58,7 +59,7 @@ impl<R: Role, C> RaftNode<R, C> {
     }
 }
 
-impl<R: Role, C> RaftNode<R, C> {
+impl<R: Role, C, S: StateMachine<C>> RaftNode<R, C, S> {
     pub(crate) fn process_append_request(
         &mut self,
         req: AppendEntriesRequest<C>,
@@ -121,7 +122,7 @@ pub(crate) struct RequestVoteResponse {
     pub(crate) vote_granted: bool,
 }
 
-impl<R: Role, C> RaftNode<R, C> {
+impl<R: Role, C, S: StateMachine<C>> RaftNode<R, C, S> {
     pub(crate) fn process_vote_request(&mut self, req: RequestVoteRequest) -> RequestVoteResponse {
         let current_term = *self.common.current_term;
         if !self.on_node_request(&req)

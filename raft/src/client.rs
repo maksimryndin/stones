@@ -1,10 +1,10 @@
+use stones_core::NodeId;
 
-
-pub struct Request<C> {
+pub struct ClientRequest<C> {
     command: C,
 }
 
-pub enum Response {
+pub enum ClientResponse {
     Commited,
     Aborted,
     Redirect(NodeId),

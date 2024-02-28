@@ -1,5 +1,6 @@
 use crate::{LogId, Term};
 use std::cmp::{Ordering, PartialEq};
+use stones_core::NodeId;
 
 #[derive(PartialEq, Eq)]
 pub(crate) struct EntryMeta {
@@ -32,6 +33,7 @@ impl PartialOrd for EntryMeta {
 pub(crate) struct Entry<C> {
     pub(crate) meta: EntryMeta,
     pub(crate) command: C,
+    pub(crate) client_id: NodeId,
 }
 
 /// Log Matching: if two logs contain an entry with the same

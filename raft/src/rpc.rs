@@ -1,11 +1,11 @@
 use crate::entry::{Entry, EntryMeta};
 use crate::state::{RaftNode, Role};
 use crate::{LogId, Term};
-use stones_core::{NodeId, StateMachine};
+use stones_core::NodeId;
 
 /// Invoked by leader to replicate log entries (§5.3); also used as
 /// heartbeat (§5.2).
-pub(crate) struct AppendEntriesRequest<C> {
+pub struct AppendEntriesRequest<C> {
     /// leader’s term
     pub(crate) term: Term,
     /// so follower can redirect clients
@@ -20,7 +20,7 @@ pub(crate) struct AppendEntriesRequest<C> {
     pub(crate) leader_commit: LogId,
 }
 
-pub(crate) struct AppendEntriesResponse {
+pub struct AppendEntriesResponse {
     /// currentTerm, for leader to update itself
     pub(crate) term: Term,
     /// true if follower contained entry matching
@@ -38,11 +38,11 @@ impl<C> NodeRequest for AppendEntriesRequest<C> {
     }
 }
 
-impl<R: Role, C, S: StateMachine<C>> RaftNode<R, C, S> {
+impl<R: Role, C: Clone> RaftNode<R, C> {
     /// Current terms are exchanged
     /// whenever servers communicate
     fn on_node_request(&mut self, req: &dyn NodeRequest) -> bool {
-        let current_term = *self.common.current_term;
+        let current_term = self.common.persistent.current_term;
         let proposed_term = req.term();
         // If a server receives a request with a stale term
         // number, it rejects the request
@@ -53,22 +53,22 @@ impl<R: Role, C, S: StateMachine<C>> RaftNode<R, C, S> {
         // that its term is out of date, it immediately reverts to fol-
         // lower state
         if proposed_term > current_term {
-            *self.common.current_term = proposed_term;
+            self.common.persistent.update().current_term = proposed_term;
         }
         true
     }
 }
 
-impl<R: Role, C, S: StateMachine<C>> RaftNode<R, C, S> {
+impl<R: Role, C: Clone> RaftNode<R, C> {
     pub(crate) fn process_append_request(
         &mut self,
         req: AppendEntriesRequest<C>,
     ) -> AppendEntriesResponse {
-        let current_term = *self.common.current_term;
+        let current_term = self.common.persistent.current_term;
         let prev_log_index = req.prev_log_entry.index;
         if !self.on_node_request(&req)
-            || prev_log_index >= self.common.log.len()
-            || &self.common.log[prev_log_index] != &req.prev_log_entry
+            || prev_log_index >= self.common.persistent.log.len()
+            || &self.common.persistent.log[prev_log_index] != &req.prev_log_entry
         {
             return AppendEntriesResponse {
                 term: current_term,
@@ -78,14 +78,20 @@ impl<R: Role, C, S: StateMachine<C>> RaftNode<R, C, S> {
         let last_index = prev_log_index + req.entries.len();
 
         let (index_delete_since, index_insert_since) = ((prev_log_index + 1)
-            ..self.common.log.len())
+            ..self.common.persistent.log.len())
             .zip(0..req.entries.len())
-            .find(|(log_index, new_index)| req.entries[*new_index] != self.common.log[*log_index])
-            .unwrap_or((self.common.log.len(), 0));
-        self.common.log.truncate(index_delete_since);
+            .find(|(log_index, new_index)| {
+                req.entries[*new_index] != self.common.persistent.log[*log_index]
+            })
+            .unwrap_or((self.common.persistent.log.len(), 0));
+        self.common
+            .persistent
+            .update()
+            .log
+            .truncate(index_delete_since);
 
         for entry in req.entries.into_iter().skip(index_insert_since) {
-            self.common.log.push(entry);
+            self.common.persistent.update().log.push(entry);
         }
 
         if req.leader_commit > self.common.commit_index {
@@ -100,7 +106,7 @@ impl<R: Role, C, S: StateMachine<C>> RaftNode<R, C, S> {
 }
 
 /// Invoked by candidates to gather votes (§5.2).
-pub(crate) struct RequestVoteRequest {
+pub struct RequestVoteRequest {
     /// candidate’s term
     term: Term,
     /// candidate requesting vote
@@ -115,27 +121,28 @@ impl NodeRequest for RequestVoteRequest {
     }
 }
 
-pub(crate) struct RequestVoteResponse {
+pub struct RequestVoteResponse {
     /// currentTerm, for candidate to update itself
     pub(crate) term: Term,
     /// true means candidate received vote
     pub(crate) vote_granted: bool,
 }
 
-impl<R: Role, C, S: StateMachine<C>> RaftNode<R, C, S> {
+impl<R: Role, C: Clone> RaftNode<R, C> {
     pub(crate) fn process_vote_request(&mut self, req: RequestVoteRequest) -> RequestVoteResponse {
-        let current_term = *self.common.current_term;
+        let current_term = self.common.persistent.current_term;
         if !self.on_node_request(&req)
-            || self.common.voted_for.is_some()
-            || !self.common.log.is_empty()
-                && req.last_log_entry < self.common.log[self.common.log.len() - 1]
+            || self.common.persistent.voted_for.is_some()
+            || !self.common.persistent.log.is_empty()
+                && req.last_log_entry
+                    < self.common.persistent.log[self.common.persistent.log.len() - 1]
         {
             return RequestVoteResponse {
                 term: current_term,
                 vote_granted: false,
             };
         }
-        *self.common.voted_for = Some(req.candidate_id);
+        self.common.persistent.update().voted_for = Some(req.candidate_id);
 
         RequestVoteResponse {
             term: current_term,

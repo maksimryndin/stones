@@ -9,8 +9,11 @@ license.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-futures = "0.3.30"
+futures = { workspace = true }
 stones-core = { path = "../core" }
+
+[dev-dependencies]
+tokio = { version = "1.36.0", features = ["macros", "rt"]}
 
 [lints]
 workspace = true

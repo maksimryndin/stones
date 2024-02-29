@@ -1,6 +1,7 @@
 # Stones
 
-Primitives for building distributed systems in Rust
+Primitives for building distributed systems in Rust.
+This repository also accompanies [the book](https://maksimryndin.github.io/distributed-book/).
 
 ## Raft
 

@@ -1,44 +1,30 @@
 use crate::client::{ClientRequest, ClientResponse};
+use crate::effects::Persistence;
 use crate::entry::Entry;
 use crate::rpc::{
     AppendEntriesRequest, AppendEntriesResponse, RequestVoteRequest, RequestVoteResponse,
 };
 use crate::{LogId, Term};
-use core::ops::{Deref, DerefMut};
 use futures::channel::mpsc;
 use std::collections::HashMap;
-use stones_core::{NodeId, StateMachine};
+use stones_core::NodeId;
 
-/// Persistent state
-pub(crate) struct Persistent<T: Sized>(T);
-
-impl<T: Sized> Deref for Persistent<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<T: Sized> DerefMut for Persistent<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-// impl also AsRef an AsMut for Persistent
-
-pub(crate) struct CommonAttributes<C, S: StateMachine<C>> {
+#[derive(Clone)]
+pub struct Persistent<C: Clone> {
     /// latest term server has seen (initialized to 0
     /// on first boot, increases monotonically)
-    pub(crate) current_term: Persistent<Term>,
+    pub current_term: Term,
     /// candidateId that received vote in current
     /// term (or null if none)
-    pub(crate) voted_for: Persistent<Option<NodeId>>,
+    pub voted_for: Option<NodeId>,
     /// log entries; each entry contains command
     /// for state machine, and term when entry
     /// was received by leader (first index is 1)
-    pub(crate) log: Persistent<Vec<Entry<C>>>,
+    pub log: Vec<Entry<C>>,
+}
+
+pub(crate) struct CommonAttributes<C: Clone> {
+    pub(crate) persistent: Persistence<Persistent<C>>,
     /// index of highest log entry known to be
     /// committed (initialized to 0, increases
     /// monotonically).
@@ -54,13 +40,13 @@ pub(crate) struct CommonAttributes<C, S: StateMachine<C>> {
     /// will ever apply a different log entry for the same index.
     pub(crate) last_applied: LogId,
     // state machine
-    pub(crate) machine: S,
+    pub(crate) machine: mpsc::UnboundedSender<C>,
     // nodes
     pub(crate) nodes: Vec<NodeId>,
 }
 
-pub(crate) struct RaftNode<R: Role, C, S: StateMachine<C>> {
-    pub(crate) common: CommonAttributes<C, S>,
+pub(crate) struct RaftNode<R: Role, C: Clone> {
+    pub(crate) common: CommonAttributes<C>,
     /// Role-specific data
     pub(crate) role: R,
 }
@@ -72,9 +58,9 @@ impl Role for Candidate {}
 impl Role for Follower {}
 
 /// Possible transition from role R to role N
-pub(crate) enum Transition<R: Role, N: Role, C, S: StateMachine<C>> {
-    Remains(RaftNode<R, C, S>),
-    ChangedTo(RaftNode<N, C, S>),
+pub(crate) enum Transition<R: Role, N: Role, C: Clone> {
+    Remains(RaftNode<R, C>),
+    ChangedTo(RaftNode<N, C>),
 }
 
 pub(crate) struct Leader {
@@ -88,7 +74,7 @@ pub(crate) struct Leader {
     match_index: HashMap<NodeId, LogId>,
 }
 
-impl<C, S: StateMachine<C>> RaftNode<Leader, C, S> {
+impl<C: Clone> RaftNode<Leader, C> {
     // client request contains a command to
     // be executed by the replicated state machines
     // todo request contains command
@@ -118,8 +104,8 @@ impl<C, S: StateMachine<C>> RaftNode<Leader, C, S> {
         response: AppendEntriesResponse,
         reply_to_client: &mut mpsc::Sender<(NodeId, ClientResponse)>,
         reply_to_node: &mut mpsc::Sender<Vec<(NodeId, AppendEntriesRequest<C>)>>,
-    ) -> Transition<Leader, Follower, C, S> {
-        if response.term > *self.common.current_term {
+    ) -> Transition<Leader, Follower, C> {
+        if response.term > self.common.persistent.current_term {
             return Transition::ChangedTo(self.into());
         }
         if !response.success {}
@@ -152,13 +138,13 @@ pub(crate) struct Candidate {
     votes: u8,
 }
 
-impl<C, S: StateMachine<C>> RaftNode<Candidate, C, S> {
+impl<C: Clone> RaftNode<Candidate, C> {
     pub(crate) fn on_append_request(
         mut self,
         node_id: NodeId,
         request: AppendEntriesRequest<C>,
         reply_to: &mut mpsc::Sender<(NodeId, AppendEntriesResponse)>,
-    ) -> Transition<Candidate, Follower, C, S> {
+    ) -> Transition<Candidate, Follower, C> {
         let response = self.process_append_request(request);
         // TODO send response via provided reply_to
         // TODO save persistent state
@@ -174,7 +160,7 @@ impl<C, S: StateMachine<C>> RaftNode<Candidate, C, S> {
         node_id: NodeId,
         request: RequestVoteRequest,
         reply_to: &mut mpsc::Sender<(NodeId, RequestVoteResponse)>,
-    ) -> Transition<Candidate, Follower, C, S> {
+    ) -> Transition<Candidate, Follower, C> {
         let response = self.process_vote_request(request);
         // TODO send response via provided reply_to
         // TODO save persistent state
@@ -189,17 +175,17 @@ impl<C, S: StateMachine<C>> RaftNode<Candidate, C, S> {
         self,
         node_id: NodeId,
         response: RequestVoteResponse,
-    ) -> Transition<Candidate, Follower, C, S> {
+    ) -> Transition<Candidate, Follower, C> {
         if response.vote_granted {
             self.role.votes.checked_add(1).expect("too many votes");
-        } else if response.term > *self.common.current_term {
+        } else if response.term > self.common.persistent.current_term {
             return Transition::ChangedTo(self.into());
         }
         Transition::Remains(self)
     }
 
     // if majority of votes becomes a new Leader and sends heartbeats
-    pub(crate) fn check_votes(self) -> Transition<Candidate, Leader, C, S> {
+    pub(crate) fn check_votes(self) -> Transition<Candidate, Leader, C> {
         let number_of_nodes: u8 = self
             .common
             .nodes
@@ -218,7 +204,7 @@ impl<C, S: StateMachine<C>> RaftNode<Candidate, C, S> {
         &mut self,
         reply_to: &mut mpsc::Sender<Vec<(NodeId, RequestVoteRequest)>>,
     ) {
-        if let Err(_) = (*self.common.current_term).increment() {
+        if let Err(_) = self.common.persistent.update().current_term.increment() {
             // TODO crash as we cannot insrease term ? or remain a follower?
             // term is persistent so we cannot recover from crash automatically
             // neither receive append requests - every time any leader will be disqualified
@@ -246,9 +232,23 @@ pub(crate) struct Follower {
     leader_id: Option<NodeId>,
 }
 
-impl<C, S: StateMachine<C>> RaftNode<Follower, C, S> {
-    pub(crate) fn new() -> RaftNode<Follower, C, S> {
-        todo!()
+impl<C: Clone> RaftNode<Follower, C> {
+    pub(crate) fn new(
+        persistent_state: Persistent<C>,
+        persistence_tx: mpsc::UnboundedSender<Persistent<C>>,
+        machine: mpsc::UnboundedSender<C>,
+        nodes: Vec<NodeId>,
+    ) -> RaftNode<Follower, C> {
+        Self {
+            role: Follower { leader_id: None },
+            common: CommonAttributes {
+                persistent: Persistence::new(persistent_state, persistence_tx),
+                commit_index: 0,
+                last_applied: 0,
+                nodes,
+                machine,
+            },
+        }
     }
 
     pub(crate) fn on_append_request(
@@ -277,8 +277,8 @@ impl<C, S: StateMachine<C>> RaftNode<Follower, C, S> {
     pub(crate) fn on_election_timeout(
         self,
         reply_to: &mut mpsc::Sender<Vec<(NodeId, RequestVoteRequest)>>,
-    ) -> RaftNode<Candidate, C, S> {
-        let mut candidate: RaftNode<Candidate, C, S> = self.into();
+    ) -> RaftNode<Candidate, C> {
+        let mut candidate: RaftNode<Candidate, C> = self.into();
         candidate.on_election_timeout(reply_to);
         candidate
     }
@@ -296,40 +296,40 @@ impl<C, S: StateMachine<C>> RaftNode<Follower, C, S> {
 
 /// State transitions
 
-impl<C, S: StateMachine<C>> From<RaftNode<Candidate, C, S>> for RaftNode<Follower, C, S> {
-    fn from(candidate: RaftNode<Candidate, C, S>) -> Self {
-        let RaftNode::<Candidate, C, S> { common, .. } = candidate;
-        RaftNode::<Follower, C, S> {
+impl<C: Clone> From<RaftNode<Candidate, C>> for RaftNode<Follower, C> {
+    fn from(candidate: RaftNode<Candidate, C>) -> Self {
+        let RaftNode::<Candidate, C> { common, .. } = candidate;
+        RaftNode::<Follower, C> {
             common,
             role: Follower { leader_id: None },
         }
     }
 }
 
-impl<C, S: StateMachine<C>> From<RaftNode<Leader, C, S>> for RaftNode<Follower, C, S> {
-    fn from(leader: RaftNode<Leader, C, S>) -> Self {
-        let RaftNode::<Leader, C, S> { common, .. } = leader;
-        RaftNode::<Follower, C, S> {
+impl<C: Clone> From<RaftNode<Leader, C>> for RaftNode<Follower, C> {
+    fn from(leader: RaftNode<Leader, C>) -> Self {
+        let RaftNode::<Leader, C> { common, .. } = leader;
+        RaftNode::<Follower, C> {
             common,
             role: Follower { leader_id: None },
         }
     }
 }
 
-impl<C, S: StateMachine<C>> From<RaftNode<Follower, C, S>> for RaftNode<Candidate, C, S> {
-    fn from(follower: RaftNode<Follower, C, S>) -> Self {
-        let RaftNode::<Follower, C, S> { common, .. } = follower;
-        RaftNode::<Candidate, C, S> {
+impl<C: Clone> From<RaftNode<Follower, C>> for RaftNode<Candidate, C> {
+    fn from(follower: RaftNode<Follower, C>) -> Self {
+        let RaftNode::<Follower, C> { common, .. } = follower;
+        RaftNode::<Candidate, C> {
             common,
             role: Candidate { votes: 0 },
         }
     }
 }
 
-impl<C, S: StateMachine<C>> From<RaftNode<Candidate, C, S>> for RaftNode<Leader, C, S> {
-    fn from(candidate: RaftNode<Candidate, C, S>) -> Self {
-        let RaftNode::<Candidate, C, S> { common, .. } = candidate;
-        let log_length = common.log.len();
+impl<C: Clone> From<RaftNode<Candidate, C>> for RaftNode<Leader, C> {
+    fn from(candidate: RaftNode<Candidate, C>) -> Self {
+        let RaftNode::<Candidate, C> { common, .. } = candidate;
+        let log_length = common.persistent.log.len();
         let next_index = common
             .nodes
             .iter()
@@ -340,7 +340,7 @@ impl<C, S: StateMachine<C>> From<RaftNode<Candidate, C, S>> for RaftNode<Leader,
             .iter()
             .map(|node_id| (node_id.clone(), 0))
             .collect();
-        RaftNode::<Leader, C, S> {
+        RaftNode::<Leader, C> {
             common,
             role: Leader {
                 next_index,

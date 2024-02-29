@@ -4,6 +4,8 @@
 
 pub mod machine;
 pub mod node;
+pub mod persistence;
 
 pub use machine::StateMachine;
 pub use node::NodeId;
+pub use persistence::PersistenceLayer;

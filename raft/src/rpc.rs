@@ -5,6 +5,7 @@ use stones_core::NodeId;
 
 /// Invoked by leader to replicate log entries (§5.3); also used as
 /// heartbeat (§5.2).
+#[derive(Clone)]
 pub struct AppendEntriesRequest<C> {
     /// leader’s term
     pub(crate) term: Term,
@@ -12,7 +13,7 @@ pub struct AppendEntriesRequest<C> {
     pub(crate) leader_id: NodeId,
     /// a log entry immediately preceding
     /// new ones
-    pub(crate) prev_log_entry: EntryMeta,
+    pub(crate) prev_log_entry: Option<EntryMeta>,
     /// log entries to store (empty for heartbeat;
     /// may send more than one for efficiency)
     pub(crate) entries: Vec<Entry<C>>,
@@ -63,17 +64,26 @@ impl<R: Role, C: Clone> RaftNode<R, C> {
     pub(crate) fn process_append_request(
         &mut self,
         req: AppendEntriesRequest<C>,
-    ) -> AppendEntriesResponse {
+    ) -> (bool, AppendEntriesResponse) {
         let current_term = self.common.persistent.current_term;
-        let prev_log_index = req.prev_log_entry.index;
-        if !self.on_node_request(&req)
-            || prev_log_index >= self.common.persistent.log.len()
-            || &self.common.persistent.log[prev_log_index] != &req.prev_log_entry
+        let prev_log_index = req.prev_log_entry.as_ref().map(|e| e.index).unwrap_or(0);
+        let transition = self.on_node_request(&req);
+        if transition
+            || self
+                .common
+                .persistent
+                .log
+                .get(prev_log_index)
+                .map(|e| &e.meta)
+                != req.prev_log_entry.as_ref()
         {
-            return AppendEntriesResponse {
-                term: current_term,
-                success: false,
-            };
+            return (
+                transition,
+                AppendEntriesResponse {
+                    term: current_term,
+                    success: false,
+                },
+            );
         }
         let last_index = prev_log_index + req.entries.len();
 
@@ -98,21 +108,25 @@ impl<R: Role, C: Clone> RaftNode<R, C> {
             self.common.commit_index = req.leader_commit.min(last_index);
         }
 
-        AppendEntriesResponse {
-            term: current_term,
-            success: true,
-        }
+        (
+            false,
+            AppendEntriesResponse {
+                term: current_term,
+                success: true,
+            },
+        )
     }
 }
 
 /// Invoked by candidates to gather votes (§5.2).
+#[derive(Clone)]
 pub struct RequestVoteRequest {
     /// candidate’s term
-    term: Term,
+    pub(crate) term: Term,
     /// candidate requesting vote
-    candidate_id: NodeId,
+    pub(crate) candidate_id: NodeId,
     /// candidate’s last log entry (§5.4)
-    last_log_entry: EntryMeta,
+    pub(crate) last_log_entry: Option<EntryMeta>,
 }
 
 impl NodeRequest for RequestVoteRequest {
@@ -129,24 +143,32 @@ pub struct RequestVoteResponse {
 }
 
 impl<R: Role, C: Clone> RaftNode<R, C> {
-    pub(crate) fn process_vote_request(&mut self, req: RequestVoteRequest) -> RequestVoteResponse {
+    pub(crate) fn process_vote_request(
+        &mut self,
+        req: RequestVoteRequest,
+    ) -> (bool, RequestVoteResponse) {
         let current_term = self.common.persistent.current_term;
-        if !self.on_node_request(&req)
+        let transition = self.on_node_request(&req);
+        if transition
             || self.common.persistent.voted_for.is_some()
-            || !self.common.persistent.log.is_empty()
-                && req.last_log_entry
-                    < self.common.persistent.log[self.common.persistent.log.len() - 1]
+            || req.last_log_entry.as_ref() < self.common.persistent.log.last().map(|e| &e.meta)
         {
-            return RequestVoteResponse {
-                term: current_term,
-                vote_granted: false,
-            };
+            return (
+                transition,
+                RequestVoteResponse {
+                    term: current_term,
+                    vote_granted: false,
+                },
+            );
         }
         self.common.persistent.update().voted_for = Some(req.candidate_id);
 
-        RequestVoteResponse {
-            term: current_term,
-            vote_granted: true,
-        }
+        (
+            false,
+            RequestVoteResponse {
+                term: current_term,
+                vote_granted: true,
+            },
+        )
     }
 }

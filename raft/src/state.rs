@@ -43,6 +43,8 @@ pub(crate) struct CommonAttributes<C: Clone> {
     pub(crate) machine: mpsc::UnboundedSender<C>,
     // nodes
     pub(crate) nodes: Vec<NodeId>,
+    // me
+    pub(crate) me: NodeId,
 }
 
 pub(crate) struct RaftNode<R: Role, C: Clone> {
@@ -145,10 +147,11 @@ impl<C: Clone> RaftNode<Candidate, C> {
         request: AppendEntriesRequest<C>,
         reply_to: &mut mpsc::Sender<(NodeId, AppendEntriesResponse)>,
     ) -> Transition<Candidate, Follower, C> {
-        let response = self.process_append_request(request);
-        // TODO send response via provided reply_to
-        // TODO save persistent state
-        if response.success {
+        let (transition, response) = self.process_append_request(request);
+        reply_to
+            .try_send((node_id, response))
+            .expect("channel has a free slot");
+        if transition {
             Transition::ChangedTo(self.into())
         } else {
             Transition::Remains(self)
@@ -161,10 +164,11 @@ impl<C: Clone> RaftNode<Candidate, C> {
         request: RequestVoteRequest,
         reply_to: &mut mpsc::Sender<(NodeId, RequestVoteResponse)>,
     ) -> Transition<Candidate, Follower, C> {
-        let response = self.process_vote_request(request);
-        // TODO send response via provided reply_to
-        // TODO save persistent state
-        if response.vote_granted {
+        let (transition, response) = self.process_vote_request(request);
+        reply_to
+            .try_send((node_id, response))
+            .expect("channel has a free slot");
+        if transition {
             Transition::ChangedTo(self.into())
         } else {
             Transition::Remains(self)
@@ -211,18 +215,35 @@ impl<C: Clone> RaftNode<Candidate, C> {
         }
         // vote for self
         self.role.votes.checked_add(1).expect("too many votes");
-        // broadcast RequestVote
-        // TODO save persistent state
+        // multicast RequestVote
+        let req = RequestVoteRequest {
+            term: self.common.persistent.current_term,
+            candidate_id: self.common.me.clone(),
+            last_log_entry: self.common.persistent.log.last().map(|e| e.meta.clone()),
+        };
+        let requests = self
+            .common
+            .nodes
+            .iter()
+            .filter_map(|node_id| {
+                (node_id != &self.common.me).then_some((node_id.clone(), req.clone()))
+            })
+            .collect();
+        reply_to
+            .try_send(requests)
+            .expect("channel has a free slot");
     }
 
-    // if candidate (i.e. doesn't know the leader) receives a client request - it responds with 503 Service Unavailable
+    // if a candidate (i.e. doesn't know the leader) receives a client request - it aborts the request
     pub(crate) fn on_client_request(
         &self,
         node_id: NodeId,
         request: ClientRequest<C>,
         reply_to: &mut mpsc::Sender<(NodeId, ClientResponse)>,
     ) {
-        todo!()
+        reply_to
+            .try_send((node_id, ClientResponse::Aborted))
+            .expect("channel has a free slot");
     }
 }
 
@@ -238,6 +259,7 @@ impl<C: Clone> RaftNode<Follower, C> {
         persistence_tx: mpsc::UnboundedSender<Persistent<C>>,
         machine: mpsc::UnboundedSender<C>,
         nodes: Vec<NodeId>,
+        me: NodeId,
     ) -> RaftNode<Follower, C> {
         Self {
             role: Follower { leader_id: None },
@@ -246,6 +268,7 @@ impl<C: Clone> RaftNode<Follower, C> {
                 commit_index: 0,
                 last_applied: 0,
                 nodes,
+                me,
                 machine,
             },
         }
@@ -258,9 +281,10 @@ impl<C: Clone> RaftNode<Follower, C> {
         reply_to: &mut mpsc::Sender<(NodeId, AppendEntriesResponse)>,
     ) {
         self.role.leader_id = Some(request.leader_id.clone());
-        let response = self.process_append_request(request);
-        // TODO send response via provided reply_to
-        // TODO save persistent state
+        let (_, response) = self.process_append_request(request);
+        reply_to
+            .try_send((node_id, response))
+            .expect("channel has a free slot");
     }
 
     pub(crate) fn on_vote_request(
@@ -269,9 +293,10 @@ impl<C: Clone> RaftNode<Follower, C> {
         request: RequestVoteRequest,
         reply_to: &mut mpsc::Sender<(NodeId, RequestVoteResponse)>,
     ) {
-        let response = self.process_vote_request(request);
-        // TODO send response via provided reply_to
-        // TODO save persistent state
+        let (_, response) = self.process_vote_request(request);
+        reply_to
+            .try_send((node_id, response))
+            .expect("channel has a free slot");
     }
 
     pub(crate) fn on_election_timeout(
@@ -290,7 +315,14 @@ impl<C: Clone> RaftNode<Follower, C> {
         request: ClientRequest<C>,
         reply_to: &mut mpsc::Sender<(NodeId, ClientResponse)>,
     ) {
-        todo!()
+        let resp = if let Some(leader_id) = self.role.leader_id.clone() {
+            ClientResponse::Redirect(leader_id)
+        } else {
+            ClientResponse::Aborted
+        };
+        reply_to
+            .try_send((node_id, resp))
+            .expect("channel has a free slot");
     }
 }
 

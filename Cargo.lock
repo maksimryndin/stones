@@ -223,6 +223,9 @@ dependencies = [
 [[package]]
 name = "stones-core"
 version = "0.1.0"
+dependencies = [
+ "futures",
+]
 
 [[package]]
 name = "stones-raft"

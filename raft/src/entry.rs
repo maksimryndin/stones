@@ -48,18 +48,6 @@ impl<C> PartialEq for Entry<C> {
 
 impl<C> Eq for Entry<C> {}
 
-impl<C> PartialEq<EntryMeta> for Entry<C> {
-    fn eq(&self, other: &EntryMeta) -> bool {
-        self.meta.eq(other)
-    }
-}
-
-impl<C> PartialEq<Entry<C>> for EntryMeta {
-    fn eq(&self, other: &Entry<C>) -> bool {
-        self.eq(&other.meta)
-    }
-}
-
 impl<C> Ord for Entry<C> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.meta.cmp(&other.meta)
@@ -69,17 +57,5 @@ impl<C> Ord for Entry<C> {
 impl<C> PartialOrd for Entry<C> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(&other))
-    }
-}
-
-impl<C> PartialOrd<EntryMeta> for Entry<C> {
-    fn partial_cmp(&self, other: &EntryMeta) -> Option<Ordering> {
-        self.meta.partial_cmp(other)
-    }
-}
-
-impl<C> PartialOrd<Entry<C>> for EntryMeta {
-    fn partial_cmp(&self, other: &Entry<C>) -> Option<Ordering> {
-        self.partial_cmp(&other.meta)
     }
 }

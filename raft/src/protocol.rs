@@ -32,17 +32,17 @@ pub enum OutgoingMessage<C: Clone> {
 }
 
 // Protocol is validated by types and method signatures at state.rs
-pub async fn main<C, S, P>(mut machine: S, mut persistence_layer: P)
-where
+pub async fn main<C, S, P>(
+    me: NodeId,
+    mut machine: S,
+    mut persistence_layer: P,
+    outgoing_tx: mpsc::UnboundedSender<OutgoingMessage<C>>,
+    mut incoming_rx: mpsc::UnboundedReceiver<IncomingMessage<C>>,
+) where
     S: StateMachine<C>,
     P: PersistenceLayer<Persistent<C>>,
     C: Clone,
 {
-    // external channels
-    let (outgoing_tx, outgoing_rx) = mpsc::unbounded(); // outgoing_rx - is consumed by transport
-    let (incoming_tx, mut incoming_rx) = mpsc::unbounded(); // incoming_tx - is populated by transport
-
-    // internal channels
     let (persistence_tx, mut persistence_rx) = mpsc::unbounded();
     let (machine_tx, mut machine_rx) = mpsc::unbounded();
     let (mut outgoing_client_tx, mut outgoing_client_rx) = mpsc::channel(1);
@@ -58,6 +58,7 @@ where
         persistence_tx,
         machine_tx,
         nodes,
+        me,
     ));
     let election_timeout = generate_timeout().fuse();
     futures::pin_mut!(election_timeout);

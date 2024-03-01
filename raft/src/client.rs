@@ -1,7 +1,7 @@
 use stones_core::NodeId;
 
 pub struct ClientRequest<C> {
-    command: C,
+    pub command: C,
 }
 
 pub enum ClientResponse {

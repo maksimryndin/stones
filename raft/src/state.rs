@@ -1,6 +1,6 @@
 use crate::client::{ClientRequest, ClientResponse};
 use crate::effects::Persistence;
-use crate::entry::Entry;
+use crate::entry::{Entry, EntryMeta};
 use crate::rpc::{
     AppendEntriesRequest, AppendEntriesResponse, RequestVoteRequest, RequestVoteResponse,
 };
@@ -79,25 +79,45 @@ pub(crate) struct Leader {
 impl<C: Clone> RaftNode<Leader, C> {
     // client request contains a command to
     // be executed by the replicated state machines
-    // todo request contains command
     pub(crate) fn on_client_request(
         &mut self,
-        node_id: NodeId,
+        client_id: NodeId,
         request: ClientRequest<C>,
-        reply_to: &mut mpsc::Sender<Vec<(NodeId, AppendEntriesRequest<C>)>>,
+        multicast_to: &mut mpsc::Sender<Vec<(NodeId, AppendEntriesRequest<C>)>>,
     ) {
+        let ClientRequest { command } = request;
+        let index = self.common.persistent.log.len();
+        let term = self.common.persistent.current_term;
         // appends the command to its log as a new entry
-        // issues AppendEntries RPCs in parallel to each of the other
-        // servers to replicate the entry
+        let new_entry = Entry {
+            client_id,
+            command,
+            meta: EntryMeta { index, term },
+        };
+        self.common.persistent.update().log.push(new_entry.clone());
+        // issues AppendEntries RPCs in parallel to other
+        // nodes to replicate the entry
+        let prev_log_entry =
+            (index != 0).then_some(self.common.persistent.log[index - 1].meta.clone());
+        let req = AppendEntriesRequest {
+            term,
+            leader_id: self.common.me.clone(),
+            prev_log_entry,
+            entries: vec![new_entry],
+            leader_commit: self.common.commit_index,
+        };
 
-        // If followers crash or run slowly,
-        // or if network packets are lost, the leader retries Append-
-        // Entries RPCs indefinitely (even after it has responded to
-        // the client) until all followers eventually store all log en-
-        // tries.
-
-        // collected replies
-        todo!()
+        let requests = self
+            .common
+            .nodes
+            .iter()
+            .filter_map(|node_id| {
+                (node_id != &self.common.me).then_some((node_id.clone(), req.clone()))
+            })
+            .collect();
+        multicast_to
+            .try_send(requests)
+            .expect("channel has a free slot");
     }
 
     pub(crate) fn on_append_reponse(
@@ -105,16 +125,17 @@ impl<C: Clone> RaftNode<Leader, C> {
         node_id: NodeId,
         response: AppendEntriesResponse,
         reply_to_client: &mut mpsc::Sender<(NodeId, ClientResponse)>,
-        reply_to_node: &mut mpsc::Sender<Vec<(NodeId, AppendEntriesRequest<C>)>>,
+        multicast_to: &mut mpsc::Sender<Vec<(NodeId, AppendEntriesRequest<C>)>>,
     ) -> Transition<Leader, Follower, C> {
         if response.term > self.common.persistent.current_term {
             return Transition::ChangedTo(self.into());
         }
-        if !response.success {}
-        // if last log index ≥ nextIndex for a follower: send
-        // AppendEntries RPC with log entries starting at nextIndex
         // If successful: update nextIndex and matchIndex for
         // follower (§5.3)
+        if response.success {}
+        // if last log index ≥ nextIndex for a follower: send
+        // AppendEntries RPC with log entries starting at nextIndex
+
         // • If AppendEntries fails because of log inconsistency:
         // decrement nextIndex and retry
 
@@ -188,7 +209,7 @@ impl<C: Clone> RaftNode<Candidate, C> {
         Transition::Remains(self)
     }
 
-    // if majority of votes becomes a new Leader and sends heartbeats
+    // if majority of votes => becomes a new Leader and sends heartbeats
     pub(crate) fn check_votes(self) -> Transition<Candidate, Leader, C> {
         let number_of_nodes: u8 = self
             .common

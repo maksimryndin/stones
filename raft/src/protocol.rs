@@ -32,6 +32,9 @@ pub enum OutgoingMessage<C: Clone> {
 }
 
 // Protocol is validated by types and method signatures at state.rs
+// Assumptions about transport
+// - reliable (either delivered of failed)
+// - retries failed deliveries
 pub async fn main<C, S, P>(
     me: NodeId,
     mut machine: S,
@@ -77,7 +80,11 @@ pub async fn main<C, S, P>(
             },
             // second, on every cycle we should save the state prior to any outgoing activity!
             to_save = &mut persistence_rx.next() => {
-                let to_save = to_save.unwrap();
+                // last update wins
+                let mut to_save = to_save.unwrap();
+                while let Ok(Some(upd)) = persistence_rx.try_next() {
+                    to_save = upd;
+                }
                 persistence_layer.save(to_save).unwrap();
             },
             // third, drain outgoing messages to prevent accumulating them
@@ -101,6 +108,7 @@ pub async fn main<C, S, P>(
                 let out = out.unwrap();
                 outgoing_tx.unbounded_send(OutgoingMessage::<C>::VoteResponse(out)).expect("transport is not closed");
             },
+            // TODO leader's heartbeat
             // handle incoming messages
             req = &mut incoming_rx.next() => {
                 if req.is_none() {

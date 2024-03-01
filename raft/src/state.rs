@@ -53,6 +53,18 @@ pub(crate) struct RaftNode<R: Role, C: Clone> {
     pub(crate) role: R,
 }
 
+impl<R: Role, C: Clone> RaftNode<R, C> {
+    fn half(&self) -> u8 {
+        let number_of_nodes: u8 = self
+            .common
+            .nodes
+            .len()
+            .try_into()
+            .expect("the maximum number of nodes is 255");
+        number_of_nodes / 2
+    }
+}
+
 pub(crate) trait Role {}
 
 impl Role for Leader {}
@@ -95,24 +107,16 @@ impl<C: Clone> RaftNode<Leader, C> {
             meta: EntryMeta { index, term },
         };
         self.common.persistent.update().log.push(new_entry.clone());
-        // issues AppendEntries RPCs in parallel to other
-        // nodes to replicate the entry
-        let prev_log_entry =
-            (index != 0).then_some(self.common.persistent.log[index - 1].meta.clone());
-        let req = AppendEntriesRequest {
-            term,
-            leader_id: self.common.me.clone(),
-            prev_log_entry,
-            entries: vec![new_entry],
-            leader_commit: self.common.commit_index,
-        };
 
+        // issues AppendEntries RPCs to other
+        // nodes to replicate the entry
         let requests = self
             .common
             .nodes
             .iter()
             .filter_map(|node_id| {
-                (node_id != &self.common.me).then_some((node_id.clone(), req.clone()))
+                (node_id != &self.common.me)
+                    .then_some((node_id.clone(), self.prepare_append_request(node_id)))
             })
             .collect();
         multicast_to
@@ -121,39 +125,98 @@ impl<C: Clone> RaftNode<Leader, C> {
     }
 
     pub(crate) fn on_append_reponse(
-        self,
+        mut self,
         node_id: NodeId,
         response: AppendEntriesResponse,
         reply_to_client: &mut mpsc::Sender<(NodeId, ClientResponse)>,
-        multicast_to: &mut mpsc::Sender<Vec<(NodeId, AppendEntriesRequest<C>)>>,
+        reply_to: &mut mpsc::Sender<Vec<(NodeId, AppendEntriesRequest<C>)>>,
     ) -> Transition<Leader, Follower, C> {
         if response.term > self.common.persistent.current_term {
+            self.common.persistent.update().current_term = response.term;
             return Transition::ChangedTo(self.into());
+        }
+
+        if !response.success {
+            // If AppendEntries fails because of log inconsistency:
+            // decrement nextIndex and retry
+            // if last log index ≥ nextIndex for a follower: send
+            // AppendEntries RPC with log entries starting at nextIndex
+            if let Some(next_index) = self.role.next_index.get_mut(&node_id) {
+                *next_index -= 1;
+                let req = self.prepare_append_request(&node_id);
+                reply_to
+                    .try_send(vec![(node_id, req)])
+                    .expect("channel has a free slot");
+            }
+            return Transition::Remains(self);
         }
         // If successful: update nextIndex and matchIndex for
         // follower (§5.3)
-        if response.success {}
-        // if last log index ≥ nextIndex for a follower: send
-        // AppendEntries RPC with log entries starting at nextIndex
+        let log_length = self.common.persistent.log.len();
+        if log_length > 0 {
+            self.role
+                .next_index
+                .get_mut(&node_id)
+                .map(|next_index| *next_index = log_length);
+            self.role
+                .match_index
+                .get_mut(&node_id)
+                .map(|match_index| *match_index = log_length - 1);
+        }
 
-        // • If AppendEntries fails because of log inconsistency:
-        // decrement nextIndex and retry
-
-        // count responses
-        // if request was replicated on the majority of nodes
-        // 1) respond to client 2) mark entry as commited so all previous entries are also considered commited 3) apply entry to its state machine
+        // If there exists an N such that N > commitIndex, a majority
+        // of matchIndex[i] ≥ N, and log[N].term == currentTerm:
+        // set commitIndex = N (§5.3, §5.4).
         // Only log entries from the leader’s current
         // term are committed by counting replicas; once an entry
         // from the current term has been committed in this way,
         // then all prior entries are committed indirectly because
         // of the Log Matching Property.
+        let commit_index = self.common.commit_index;
+        let current_term = self.common.persistent.current_term;
+        // TODO quadratic complexity - redesign match_index data structure??
+        for index in self
+            .common
+            .persistent
+            .log
+            .iter()
+            .rev()
+            .filter(|e| e.meta.term == current_term && e.meta.index > commit_index)
+            .map(|e| e.meta.index)
+        {
+            if self
+                .role
+                .match_index
+                .values()
+                .filter(|log_index| **log_index >= index)
+                .count()
+                > self.half().into()
+            {
+                self.common.commit_index = index;
+                break;
+            }
+        }
 
-        //         If there exists an N such that N > commitIndex, a majority
-        // of matchIndex[i] ≥ N, and log[N].term == currentTerm:
-        // set commitIndex = N (§5.3, §5.4).
-
-        // if request was rejected, the leader decrements nextIndex for nodeId and retries the AppendEntries RPC
+        for index in (self.common.last_applied + 1)..(self.common.commit_index + 1) {
+            // TODO apply to state machine
+            // prepare responses for clients for each applied entry.
+        }
+        self.common.last_applied = self.common.commit_index;
         Transition::Remains(self)
+    }
+
+    fn prepare_append_request(&self, node_id: &NodeId) -> AppendEntriesRequest<C> {
+        let next_index = *self.role.next_index.get(node_id).expect("node is listed");
+        let term = self.common.persistent.current_term;
+        let prev_log_entry =
+            (next_index != 0).then_some(self.common.persistent.log[next_index - 1].meta.clone());
+        AppendEntriesRequest {
+            term,
+            leader_id: self.common.me.clone(),
+            prev_log_entry,
+            entries: self.common.persistent.log[next_index..].to_vec(),
+            leader_commit: self.common.commit_index,
+        }
     }
 }
 
@@ -197,13 +260,14 @@ impl<C: Clone> RaftNode<Candidate, C> {
     }
 
     pub(crate) fn on_vote_response(
-        self,
+        mut self,
         node_id: NodeId,
         response: RequestVoteResponse,
     ) -> Transition<Candidate, Follower, C> {
         if response.vote_granted {
             self.role.votes.checked_add(1).expect("too many votes");
         } else if response.term > self.common.persistent.current_term {
+            self.common.persistent.update().current_term = response.term;
             return Transition::ChangedTo(self.into());
         }
         Transition::Remains(self)
@@ -211,13 +275,7 @@ impl<C: Clone> RaftNode<Candidate, C> {
 
     // if majority of votes => becomes a new Leader and sends heartbeats
     pub(crate) fn check_votes(self) -> Transition<Candidate, Leader, C> {
-        let number_of_nodes: u8 = self
-            .common
-            .nodes
-            .len()
-            .try_into()
-            .expect("the maximum number of nodes is 255");
-        if self.role.votes > number_of_nodes / 2 {
+        if self.role.votes > self.half() {
             Transition::ChangedTo(self.into())
         } else {
             Transition::Remains(self)
@@ -303,6 +361,9 @@ impl<C: Clone> RaftNode<Follower, C> {
     ) {
         self.role.leader_id = Some(request.leader_id.clone());
         let (_, response) = self.process_append_request(request);
+        // TODO apply to state machine
+        // if commitIndex > lastApplied: increment lastApplied, apply
+        // log[lastApplied] to state machine (§5.3)
         reply_to
             .try_send((node_id, response))
             .expect("channel has a free slot");

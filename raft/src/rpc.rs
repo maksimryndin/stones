@@ -42,7 +42,7 @@ impl<C> NodeRequest for AppendEntriesRequest<C> {
 impl<R: Role, C: Clone> RaftNode<R, C> {
     /// Current terms are exchanged
     /// whenever servers communicate
-    fn on_node_request(&mut self, req: &dyn NodeRequest) -> bool {
+    fn is_behind(&mut self, req: &dyn NodeRequest) -> bool {
         let current_term = self.common.persistent.current_term;
         let proposed_term = req.term();
         // If a server receives a request with a stale term
@@ -55,6 +55,7 @@ impl<R: Role, C: Clone> RaftNode<R, C> {
         // lower state
         if proposed_term > current_term {
             self.common.persistent.update().current_term = proposed_term;
+            self.common.persistent.update().voted_for = None;
         }
         true
     }
@@ -67,8 +68,8 @@ impl<R: Role, C: Clone> RaftNode<R, C> {
     ) -> (bool, AppendEntriesResponse) {
         let current_term = self.common.persistent.current_term;
         let prev_log_index = req.prev_log_entry.as_ref().map(|e| e.index).unwrap_or(0);
-        let transition = self.on_node_request(&req);
-        if transition
+        let is_behind = self.is_behind(&req);
+        if !is_behind
             || self
                 .common
                 .persistent
@@ -78,7 +79,7 @@ impl<R: Role, C: Clone> RaftNode<R, C> {
                 != req.prev_log_entry.as_ref()
         {
             return (
-                transition,
+                is_behind,
                 AppendEntriesResponse {
                     term: current_term,
                     success: false,
@@ -148,13 +149,13 @@ impl<R: Role, C: Clone> RaftNode<R, C> {
         req: RequestVoteRequest,
     ) -> (bool, RequestVoteResponse) {
         let current_term = self.common.persistent.current_term;
-        let transition = self.on_node_request(&req);
-        if transition
+        let is_behind = self.is_behind(&req);
+        if !is_behind
             || self.common.persistent.voted_for.is_some()
             || req.last_log_entry.as_ref() < self.common.persistent.log.last().map(|e| &e.meta)
         {
             return (
-                transition,
+                is_behind,
                 RequestVoteResponse {
                     term: current_term,
                     vote_granted: false,
@@ -162,7 +163,6 @@ impl<R: Role, C: Clone> RaftNode<R, C> {
             );
         }
         self.common.persistent.update().voted_for = Some(req.candidate_id);
-
         (
             false,
             RequestVoteResponse {

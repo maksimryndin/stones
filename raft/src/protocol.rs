@@ -32,7 +32,7 @@ pub enum OutgoingMessage<C: Clone> {
 }
 
 // Protocol is validated by types and method signatures at state.rs
-// Assumptions about transport
+// Assumptions about a transport
 // - reliable (either delivered of failed)
 // - retries failed deliveries
 pub async fn main<C, S, P>(
@@ -109,6 +109,9 @@ pub async fn main<C, S, P>(
                 outgoing_tx.unbounded_send(OutgoingMessage::<C>::VoteResponse(out)).expect("transport is not closed");
             },
             // TODO leader's heartbeat
+            // Upon election: send initial empty AppendEntries RPCs
+            // (heartbeat) to each server; repeat during idle periods to
+            // prevent election timeouts (§5.2)
             // handle incoming messages
             req = &mut incoming_rx.next() => {
                 if req.is_none() {
@@ -247,7 +250,7 @@ pub async fn main<C, S, P>(
                     }
                 },
 
-            default => todo!("handle  graceful shutdown; nodes reconfiguration"),
+            // TODO handle  graceful shutdown; nodes reconfiguration
         };
     }
 }

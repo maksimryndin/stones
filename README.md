@@ -7,8 +7,12 @@ This repository also accompanies [the book](https://maksimryndin.github.io/distr
 
 > In search of an understandable Rust implementation of Raft
 
-Guided by principles from https://github.com/w3f/hs-p4p?tab=readme-ov-file#principles
-
+Design principles:
+* understandability
+* structured concurrency
+* clear distinction between effects and pure functions
+* pluggable implementation to use different async runtimes and transports
+* determinism and observability with history replay (inspired by https://github.com/w3f/hs-p4p?tab=readme-ov-file#principles)
 
 ## LICENSE
 

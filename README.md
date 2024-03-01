@@ -10,6 +10,7 @@ This repository also accompanies [the book](https://maksimryndin.github.io/distr
 Design principles:
 * understandability
 * structured concurrency
+* typestate transitions
 * clear distinction between effects and pure functions
 * pluggable implementation to use different async runtimes and transports
 * determinism and observability with history replay (inspired by https://github.com/w3f/hs-p4p?tab=readme-ov-file#principles)

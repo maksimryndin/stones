@@ -47,7 +47,7 @@ pub async fn main<C, S, P>(
     C: Clone,
 {
     let (persistence_tx, mut persistence_rx) = mpsc::unbounded();
-    let (machine_tx, mut machine_rx) = mpsc::unbounded();
+    let (machine_tx, mut machine_rx) = mpsc::channel(1);
     let (mut outgoing_client_tx, mut outgoing_client_rx) = mpsc::channel(1);
     let (mut outgoing_append_tx, mut outgoing_append_rx) = mpsc::channel(1);
     let (mut outgoing_vote_tx, mut outgoing_vote_rx) = mpsc::channel(1);

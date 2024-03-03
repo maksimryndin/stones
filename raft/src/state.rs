@@ -40,7 +40,7 @@ pub(crate) struct CommonAttributes<C: Clone> {
     /// will ever apply a different log entry for the same index.
     pub(crate) last_applied: LogId,
     // state machine
-    pub(crate) machine: mpsc::UnboundedSender<C>,
+    pub(crate) machine: mpsc::Sender<C>,
     // nodes
     pub(crate) nodes: Vec<NodeId>,
     // me
@@ -198,8 +198,17 @@ impl<C: Clone> RaftNode<Leader, C> {
         }
 
         for index in (self.common.last_applied + 1)..(self.common.commit_index + 1) {
-            // TODO apply to state machine
-            // prepare responses for clients for each applied entry.
+            let entry = self.common.persistent.log[index].clone();
+            let Entry {
+                command, client_id, ..
+            } = entry;
+            self.common
+                .machine
+                .try_send(command)
+                .expect("channel has a free slot");
+            reply_to_client
+                .try_send((client_id, ClientResponse::Commited))
+                .expect("channel has a free slot");
         }
         self.common.last_applied = self.common.commit_index;
         Transition::Remains(self)
@@ -261,7 +270,7 @@ impl<C: Clone> RaftNode<Candidate, C> {
 
     pub(crate) fn on_vote_response(
         mut self,
-        node_id: NodeId,
+        _node_id: NodeId,
         response: RequestVoteResponse,
     ) -> Transition<Candidate, Follower, C> {
         if response.vote_granted {
@@ -317,7 +326,7 @@ impl<C: Clone> RaftNode<Candidate, C> {
     pub(crate) fn on_client_request(
         &self,
         node_id: NodeId,
-        request: ClientRequest<C>,
+        _request: ClientRequest<C>,
         reply_to: &mut mpsc::Sender<(NodeId, ClientResponse)>,
     ) {
         reply_to
@@ -336,7 +345,7 @@ impl<C: Clone> RaftNode<Follower, C> {
     pub(crate) fn new(
         persistent_state: Persistent<C>,
         persistence_tx: mpsc::UnboundedSender<Persistent<C>>,
-        machine: mpsc::UnboundedSender<C>,
+        machine: mpsc::Sender<C>,
         nodes: Vec<NodeId>,
         me: NodeId,
     ) -> RaftNode<Follower, C> {
@@ -394,7 +403,7 @@ impl<C: Clone> RaftNode<Follower, C> {
     pub(crate) fn on_client_request(
         &self,
         node_id: NodeId,
-        request: ClientRequest<C>,
+        _request: ClientRequest<C>,
         reply_to: &mut mpsc::Sender<(NodeId, ClientResponse)>,
     ) {
         let resp = if let Some(leader_id) = self.role.leader_id.clone() {
